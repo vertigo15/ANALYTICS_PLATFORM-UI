@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Test artifacts
+screenshots/
+mochawesome-report/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+
+# OS
+.DS_Store
+Thumbs.db

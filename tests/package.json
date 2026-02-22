@@ -1,0 +1,30 @@
+{
+  "name": "analytics-platform-e2e-tests",
+  "version": "1.0.0",
+  "description": "E2E tests for Jeen Analytics Platform",
+  "main": "index.js",
+  "scripts": {
+    "test": "mocha cost.test.js --timeout 30000 --exit",
+    "test:cost": "mocha cost.test.js --timeout 30000 --exit",
+    "test:headless": "SET HEADLESS=true && mocha cost.test.js --timeout 30000 --exit",
+    "test:watch": "mocha cost.test.js --timeout 30000 --watch"
+  },
+  "keywords": [
+    "selenium",
+    "e2e",
+    "testing"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "chai": "^4.3.10",
+    "chromedriver": "^120.0.1",
+    "dotenv": "^16.3.1",
+    "mocha": "^10.2.0",
+    "selenium-webdriver": "^4.16.0"
+  },
+  "devDependencies": {
+    "mochawesome": "^7.1.3",
+    "puppeteer": "^24.37.5"
+  }
+}

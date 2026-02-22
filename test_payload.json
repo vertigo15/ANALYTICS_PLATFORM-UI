@@ -1,0 +1,10 @@
+{
+  "message": "how is total cost calculated",
+  "page": "cost",
+  "context": {
+    "filters": {
+      "from": "2026-01-23",
+      "to": "2026-02-22"
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "message": "show me top 3 models by cost",
+  "page": "cost",
+  "context": {
+    "filters": {
+      "from": "2026-01-23",
+      "to": "2026-02-22"
+    }
+  }
+}

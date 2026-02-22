@@ -1,0 +1,36 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": {
+      "value": "jeen-analytics-env"
+    },
+    "location": {
+      "value": "westeurope"
+    },
+    "resourceGroupName": {
+      "value": "jeen-rg-dev-weu"
+    },
+    "acrName": {
+      "value": "jeendevregistry"
+    },
+    "apiImage": {
+      "value": "jeendevregistry.azurecr.io/jeen-analytics-api:latest"
+    },
+    "webImage": {
+      "value": "jeendevregistry.azurecr.io/jeen-analytics-web:latest"
+    },
+    "dbPassword": {
+      "value": "CHANGE_ME"
+    },
+    "azureOpenAiEndpoint": {
+      "value": "https://jeen.openai.azure.com"
+    },
+    "azureOpenAiApiKey": {
+      "value": "CHANGE_ME"
+    },
+    "azureOpenAiDeployment": {
+      "value": "gpt-4o"
+    }
+  }
+}
