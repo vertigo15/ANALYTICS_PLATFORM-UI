@@ -99,21 +99,22 @@ export default function AgentsPage() {
       title: 'Most Used Agent',
       value: kpis?.current.most_used_agent?.agent_name || 'N/A',
       subtitle: kpis?.current.most_used_agent
-        ? `${kpis.current.most_used_agent.total_conversations} conversations`
+        ? `${kpis.current.most_used_agent.total_conversations} messages`
         : undefined,
       isLoading: kpisLoading,
     },
   ];
 
-  // Top agents for charts
+  // Top agents for charts — sort by total_messages since total_conversations may be 0
   const topAgents = agents
     .filter((a) => !a.is_deleted)
+    .sort((a, b) => (b.total_messages || 0) - (a.total_messages || 0))
     .slice(0, 15);
 
   // Agent Usage Ranking Chart
   const usageChartOptions: EChartsOption = useMemo(() => {
     const names = topAgents.map((a) => a.agent_name.slice(0, 30));
-    const conversations = topAgents.map((a) => a.total_conversations);
+    const messages = topAgents.map((a) => a.total_messages || 0);
 
     return {
       tooltip: {
@@ -137,9 +138,9 @@ export default function AgentsPage() {
       },
       series: [
         {
-          name: 'Conversations',
+          name: 'Messages',
           type: 'bar',
-          data: conversations.map((val, idx) => ({
+          data: messages.map((val, idx) => ({
             value: val,
             itemStyle: {
               color: topAgents[idx].agent_id === selectedAgentId
@@ -154,10 +155,14 @@ export default function AgentsPage() {
     };
   }, [topAgents, selectedAgentId]);
 
-  // Satisfaction Rate Chart
+  // Satisfaction Rate Chart — filter to agents that actually have reactions
   const satisfactionChartOptions: EChartsOption = useMemo(() => {
-    const names = topAgents.map((a) => a.agent_name.slice(0, 30));
-    const rates = topAgents.map((a) => a.satisfaction_rate);
+    const agentsWithReactions = topAgents.filter(
+      (a) => (a.total_positive_reactions || 0) + (a.total_negative_reactions || 0) > 0
+    );
+    const chartAgents = agentsWithReactions.length > 0 ? agentsWithReactions : topAgents;
+    const names = chartAgents.map((a) => a.agent_name.slice(0, 30));
+    const rates = chartAgents.map((a) => a.satisfaction_rate || 0);
     const avgRate = kpis?.current.avg_satisfaction_rate || 0;
 
     return {
@@ -165,11 +170,12 @@ export default function AgentsPage() {
         trigger: 'axis',
         axisPointer: { type: 'shadow' },
         formatter: (params: any) => {
-          const agent = topAgents[params[0].dataIndex];
+          const agent = chartAgents[params[0].dataIndex];
+          if (!agent) return '';
           return `${agent.agent_name}<br/>
-                  Satisfaction: ${agent.satisfaction_rate.toFixed(1)}%<br/>
-                  Positive: ${agent.total_positive_reactions}<br/>
-                  Negative: ${agent.total_negative_reactions}`;
+                  Satisfaction: ${(agent.satisfaction_rate || 0).toFixed(1)}%<br/>
+                  Positive: ${agent.total_positive_reactions || 0}<br/>
+                  Negative: ${agent.total_negative_reactions || 0}`;  
         },
       },
       grid: {
@@ -279,13 +285,13 @@ export default function AgentsPage() {
         axisPointer: { type: 'shadow' },
         formatter: (params: any) => {
           const agent = topAgents[params[0].dataIndex];
-          const costPerConv = agent.total_conversations > 0
-            ? agent.total_est_cost_usd / agent.total_conversations
+          const costPerMsg = agent.total_messages > 0
+            ? agent.total_est_cost_usd / agent.total_messages
             : 0;
           return `${agent.agent_name}<br/>
                   Cost: ${formatCost(agent.total_est_cost_usd)}<br/>
-                  Conversations: ${agent.total_conversations}<br/>
-                  Cost/Conv: ${formatCost(costPerConv)}`;
+                  Messages: ${agent.total_messages}<br/>
+                  Cost/Msg: ${formatCost(costPerMsg)}`;
         },
       },
       grid: {
