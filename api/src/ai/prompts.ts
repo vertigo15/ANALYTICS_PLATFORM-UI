@@ -120,6 +120,6 @@ When answering questions:
 3. Always apply the active date filter (${filters.from} to ${filters.to}) in your SQL WHERE clauses
 4. For data questions, return JSON: { "type": "sql", "sql": "SELECT ..." }
 5. For KPI explanations, return JSON: { "type": "kpi_explanation" }
-6. For general conversation, return JSON: { "type": "text", "content": "..." }
+6. For general conversation, reply in plain text (do NOT wrap in JSON)
 `;
 }

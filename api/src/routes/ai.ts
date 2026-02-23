@@ -297,9 +297,45 @@ export default async function aiRoutes(fastify: FastifyInstance) {
 
         const response = await chatCompletion(chatMessages, { temperature: 0.7 });
 
-        // If the LLM returned a JSON string with an SQL payload, execute it as a data query (robust fallback)
+        // If the LLM returned a JSON string, handle it (robust fallback)
         try {
           const maybeJson = JSON.parse(response);
+          // If it's a plain text response wrapped in JSON, extract the content
+          if (maybeJson && typeof maybeJson === 'object' && maybeJson.type === 'text' && maybeJson.content) {
+            // Fall through to text handling below with extracted content
+            const extractedContent = String(maybeJson.content).trim();
+            const suggestionMessages2 = [
+              {
+                role: 'system' as const,
+                content:
+                  'Generate 3 short relevant questions (max 10 words each) the user might ask next. Return as JSON array: ["question1", "question2", "question3"]',
+              },
+              {
+                role: 'user' as const,
+                content: `Conversation context: ${message}`,
+              },
+            ];
+
+            const suggestionsResponse2 = await chatCompletion(suggestionMessages2, {
+              temperature: 0.8,
+              max_completion_tokens: 200,
+              response_format: { type: 'json_object' },
+            });
+
+            let suggestions2: string[] = [];
+            try {
+              const parsed2 = JSON.parse(suggestionsResponse2);
+              suggestions2 = parsed2.suggestions || parsed2.questions || [];
+            } catch {
+              suggestions2 = [];
+            }
+
+            return {
+              type: 'text' as const,
+              content: extractedContent,
+              suggestions: suggestions2.slice(0, 3),
+            };
+          }
           if (maybeJson && typeof maybeJson === 'object' && maybeJson.sql) {
             const generatedSQL = String(maybeJson.sql || '');
             if (generatedSQL) {
