@@ -217,63 +217,37 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
       const cacheTTL = 3300;
 
       try {
-        // Calculate previous period
-        const fromDate = new Date(from);
-        const toDate = new Date(to);
-        const duration = toDate.getTime() - fromDate.getTime();
-        const prevTo = new Date(fromDate.getTime() - 86400000);
-        const prevFrom = new Date(prevTo.getTime() - duration);
-
-        const prevFromStr = prevFrom.toISOString().split('T')[0];
-        const prevToStr = prevTo.toISOString().split('T')[0];
-
+        // Use mart_agent_summary since mart_agent_performance_daily may be empty
         const sql = `
-          WITH current_period AS (
+          WITH summary_stats AS (
             SELECT 
-              COUNT(DISTINCT agent_id) as active_agents,
-              SUM(total_conversations) as total_conversations,
-              AVG(
+              COUNT(*) FILTER (WHERE total_messages > 0 AND is_deleted = false) as active_agents,
+              COALESCE(SUM(total_messages), 0) as total_conversations,
+              COALESCE(AVG(
                 CASE 
-                  WHEN (reactions_positive + reactions_negative) > 0
-                  THEN (reactions_positive::float / (reactions_positive + reactions_negative)) * 100
+                  WHEN (total_positive_reactions + total_negative_reactions) > 0
+                  THEN (total_positive_reactions::float / (total_positive_reactions + total_negative_reactions)) * 100
                   ELSE NULL
                 END
-              ) as avg_satisfaction_rate
-            FROM gold.mart_agent_performance_daily
-            WHERE date_day >= $1 AND date_day <= $2
-              AND total_conversations > 0
-          ),
-          previous_period AS (
-            SELECT 
-              COUNT(DISTINCT agent_id) as active_agents,
-              SUM(total_conversations) as total_conversations,
-              AVG(
-                CASE 
-                  WHEN (reactions_positive + reactions_negative) > 0
-                  THEN (reactions_positive::float / (reactions_positive + reactions_negative)) * 100
-                  ELSE NULL
-                END
-              ) as avg_satisfaction_rate
-            FROM gold.mart_agent_performance_daily
-            WHERE date_day >= $3 AND date_day <= $4
-              AND total_conversations > 0
+              ), 0) as avg_satisfaction_rate
+            FROM gold.mart_agent_summary
+            WHERE is_deleted = false
           ),
           most_used AS (
             SELECT 
               agent_id,
               agent_name,
-              SUM(total_conversations) as total_conversations
-            FROM gold.mart_agent_performance_daily
-            WHERE date_day >= $1 AND date_day <= $2
-            GROUP BY agent_id, agent_name
-            ORDER BY total_conversations DESC
+              total_messages as total_conversations
+            FROM gold.mart_agent_summary
+            WHERE is_deleted = false AND total_messages > 0
+            ORDER BY total_messages DESC
             LIMIT 1
           )
           SELECT 
             json_build_object(
-              'active_agents', COALESCE(cp.active_agents, 0),
-              'total_conversations', COALESCE(cp.total_conversations, 0),
-              'avg_satisfaction_rate', COALESCE(cp.avg_satisfaction_rate, 0),
+              'active_agents', COALESCE(ss.active_agents, 0),
+              'total_conversations', COALESCE(ss.total_conversations, 0),
+              'avg_satisfaction_rate', COALESCE(ss.avg_satisfaction_rate, 0),
               'most_used_agent', CASE 
                 WHEN mu.agent_id IS NOT NULL THEN json_build_object(
                   'agent_id', mu.agent_id,
@@ -284,20 +258,18 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
               END
             ) as current,
             json_build_object(
-              'active_agents', COALESCE(pp.active_agents, 0),
-              'total_conversations', COALESCE(pp.total_conversations, 0),
-              'avg_satisfaction_rate', COALESCE(pp.avg_satisfaction_rate, 0)
+              'active_agents', 0,
+              'total_conversations', 0,
+              'avg_satisfaction_rate', 0
             ) as previous
-          FROM current_period cp
-          CROSS JOIN previous_period pp
+          FROM summary_stats ss
           LEFT JOIN most_used mu ON true
         `;
 
         const { rows, cached } = await queryWithCache<AgentKPIs>(
           cacheKey,
           cacheTTL,
-          sql,
-          [from, to, prevFromStr, prevToStr]
+          sql
         );
 
         if (rows.length === 0) {
