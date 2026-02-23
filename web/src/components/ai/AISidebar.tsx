@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { usePathname } from 'next/navigation';
-import { X, Trash2, ChevronDown, ChevronUp, Send, Loader2 } from 'lucide-react';
-import { useAIStore } from '@/store/ai';
+import { X, Trash2, ChevronDown, ChevronUp, Send, Loader2, GripVertical } from 'lucide-react';
+import { useAIStore, MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH } from '@/store/ai';
 import { useFiltersStore } from '@/store/filters';
 import ChatMessage from './ChatMessage';
 import SuggestedQuestions from './SuggestedQuestions';
@@ -18,7 +18,7 @@ interface Message {
 
 export default function AISidebar() {
   const pathname = usePathname();
-  const { isAISidebarOpen, closeAISidebar, kpiValues } = useAIStore();
+  const { isAISidebarOpen, closeAISidebar, kpiValues, sidebarWidth, setSidebarWidth } = useAIStore();
   const { from, to, organizationId, agentId } = useFiltersStore();
 
   const [messages, setMessages] = useState<Message[]>([]);
@@ -29,6 +29,7 @@ export default function AISidebar() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const isResizing = useRef(false);
 
   // Get current page from pathname
   const currentPage = pathname?.split('/').pop() || 'cost';
@@ -55,6 +56,37 @@ export default function AISidebar() {
       textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 96)}px`;
     }
   }, [inputValue]);
+
+  // Resize handlers
+  const handleMouseMove = useCallback(
+    (e: MouseEvent) => {
+      if (!isResizing.current) return;
+      const newWidth = window.innerWidth - e.clientX;
+      setSidebarWidth(newWidth);
+    },
+    [setSidebarWidth]
+  );
+
+  const handleMouseUp = useCallback(() => {
+    isResizing.current = false;
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  }, []);
+
+  useEffect(() => {
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [handleMouseMove, handleMouseUp]);
+
+  const startResizing = () => {
+    isResizing.current = true;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  };
 
   const sendMessage = async (messageText: string) => {
     if (!messageText.trim() || isLoading) return;
@@ -137,7 +169,19 @@ export default function AISidebar() {
   if (!isAISidebarOpen) return null;
 
   return (
-    <div className="fixed right-0 top-0 h-full w-[380px] bg-white border-l border-border shadow-xl flex flex-col z-50 transform transition-transform duration-300">
+    <div
+      className="fixed right-0 top-0 h-full bg-white border-l border-border shadow-xl flex flex-col z-50"
+      style={{ width: `${sidebarWidth}px` }}
+    >
+      {/* Resize Handle */}
+      <div
+        onMouseDown={startResizing}
+        className="absolute left-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors z-10 group flex items-center"
+      >
+        <div className="absolute left-0 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+          <GripVertical size={12} className="text-text-secondary" />
+        </div>
+      </div>
       {/* Header */}
       <div className="flex-shrink-0 border-b border-border p-4">
         <div className="flex items-center justify-between mb-3">

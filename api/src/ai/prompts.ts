@@ -20,6 +20,14 @@ Rules:
 - Return responses in JSON format with a 'type' field
 - Be concise and accurate
 - When generating SQL, ensure it's syntactically correct PostgreSQL
+
+Formatting Rules for text responses:
+- Use short paragraphs (2-3 sentences max).
+- Use **bold** for key terms, metric names, and important numbers.
+- Use bullet points or numbered lists to break down multiple items.
+- For explanations, use markdown headers (## or ###) to create clear sections.
+- Keep sentences short and to the point. Never return one long block of text.
+- Use line breaks between sections for readability.
 `;
 
 function buildSchemaContext(page: string): string {

@@ -11,7 +11,7 @@ export default function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const { isAISidebarOpen } = useAIStore();
+  const { isAISidebarOpen, sidebarWidth } = useAIStore();
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -20,9 +20,8 @@ export default function DashboardLayout({
         <TopBar />
         <FreshnessBar />
         <main
-          className={`flex-1 overflow-y-auto transition-all duration-300 ${
-            isAISidebarOpen ? 'mr-[380px]' : ''
-          }`}
+          className="flex-1 overflow-y-auto transition-all duration-300"
+          style={{ marginRight: isAISidebarOpen ? `${sidebarWidth}px` : '0' }}
         >
           {children}
         </main>

@@ -1,4 +1,5 @@
 import React from 'react';
+import ReactMarkdown from 'react-markdown';
 import KpiExplanation, { KpiDefinition } from './KpiExplanation';
 import SqlResult from './SqlResult';
 import SuggestedQuestions from './SuggestedQuestions';
@@ -67,7 +68,9 @@ export default function ChatMessage(props: ChatMessageProps) {
       <div className="max-w-[85%]">
         <div className="bg-white border border-border rounded-lg p-4">
           {props.type === 'text' && (
-            <p className="text-sm text-text-primary whitespace-pre-wrap">{props.content}</p>
+            <div className="text-sm text-text-primary prose prose-sm max-w-none prose-headings:text-text-primary prose-headings:mt-3 prose-headings:mb-1 prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-strong:text-text-primary">
+              <ReactMarkdown>{props.content}</ReactMarkdown>
+            </div>
           )}
 
           {props.type === 'kpi_explanation' && (

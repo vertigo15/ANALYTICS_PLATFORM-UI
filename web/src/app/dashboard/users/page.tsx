@@ -26,6 +26,7 @@ import type { EChartsOption } from 'echarts';
 export default function UsersPage() {
   const { from, to } = useFiltersStore();
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  const [lastLoginFilter, setLastLoginFilter] = useState<string>('all');
 
   const queryParams = new URLSearchParams({ from, to }).toString();
 
@@ -46,7 +47,7 @@ export default function UsersPage() {
   );
 
   const { data: summaryData, isLoading: summaryLoading } = useSWR<ApiResponse<UserSummary[]>>(
-    '/users/summary',
+    `/users/summary?${queryParams}`,
     fetcher
   );
 
@@ -333,6 +334,164 @@ export default function UsersPage() {
     };
   }, [users]);
 
+  // Users by Last Login - Bar Chart
+  const usersByLastLoginOptions: EChartsOption = useMemo(() => {
+    const now = Date.now();
+    const activeUsers = users.filter((u) => !u.is_deleted);
+
+    const buckets = [
+      { label: 'Never', min: Infinity, max: Infinity, color: '#dc2626' },
+      { label: '90+ days', min: 90, max: Infinity, color: '#ef4444' },
+      { label: '60–90 days', min: 60, max: 89, color: '#f97316' },
+      { label: '30–60 days', min: 30, max: 59, color: '#f59e0b' },
+      { label: '14–30 days', min: 14, max: 29, color: '#84cc16' },
+      { label: '7–14 days', min: 7, max: 13, color: '#22c55e' },
+      { label: 'Last 7 days', min: 0, max: 6, color: '#16a34a' },
+    ];
+
+    const bucketCounts = buckets.map((bucket) => {
+      if (bucket.label === 'Never') {
+        return activeUsers.filter((u) => !u.last_active_at).length;
+      }
+      return activeUsers.filter((u) => {
+        if (!u.last_active_at) return false;
+        const days = Math.floor((now - new Date(u.last_active_at).getTime()) / (1000 * 60 * 60 * 24));
+        return days >= bucket.min && days <= bucket.max;
+      }).length;
+    });
+
+    return {
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'shadow' },
+      },
+      grid: {
+        left: '3%',
+        right: '4%',
+        bottom: '3%',
+        containLabel: true,
+      },
+      xAxis: {
+        type: 'category',
+        data: buckets.map((b) => b.label),
+        axisLabel: { fontSize: 10, rotate: 25 },
+      },
+      yAxis: {
+        type: 'value',
+        name: 'Users',
+      },
+      series: [
+        {
+          name: 'Users',
+          type: 'bar',
+          data: bucketCounts.map((count, i) => ({
+            value: count,
+            itemStyle: { color: buckets[i].color },
+          })),
+          label: {
+            show: true,
+            position: 'top',
+            formatter: '{c}',
+            fontSize: 11,
+            color: '#666',
+          },
+        },
+      ],
+    };
+  }, [users]);
+
+  // User Activity Status - Donut Chart
+  const userActivityStatusOptions: EChartsOption = useMemo(() => {
+    const now = Date.now();
+    const activeUsers = users.filter((u) => !u.is_deleted);
+
+    let active = 0;
+    let atRisk = 0;
+    let dormant = 0;
+
+    activeUsers.forEach((u) => {
+      if (!u.last_active_at) {
+        dormant++;
+        return;
+      }
+      const days = Math.floor((now - new Date(u.last_active_at).getTime()) / (1000 * 60 * 60 * 24));
+      if (days <= 30) active++;
+      else if (days <= 90) atRisk++;
+      else dormant++;
+    });
+
+    return {
+      tooltip: {
+        trigger: 'item',
+        formatter: '{b}: {c} ({d}%)',
+      },
+      legend: {
+        orient: 'vertical',
+        left: 'left',
+        formatter: (name: string) => {
+          const counts: Record<string, number> = { Active: active, 'At-Risk': atRisk, Dormant: dormant };
+          const total = active + atRisk + dormant;
+          const pct = total > 0 ? ((counts[name] / total) * 100).toFixed(1) : '0';
+          return `${name}: ${counts[name]} (${pct}%)`;
+        },
+      },
+      series: [
+        {
+          name: 'Status',
+          type: 'pie',
+          radius: ['40%', '70%'],
+          avoidLabelOverlap: false,
+          itemStyle: {
+            borderRadius: 10,
+            borderColor: '#fff',
+            borderWidth: 2,
+          },
+          label: {
+            show: true,
+            formatter: (params: any) => {
+              return params.value > 0 ? `${params.name}\n${params.value}` : '';
+            },
+            fontSize: 12,
+          },
+          emphasis: {
+            label: {
+              show: true,
+              fontSize: 14,
+              fontWeight: 'bold',
+            },
+          },
+          data: [
+            { value: active, name: 'Active', itemStyle: { color: '#16a34a' } },
+            { value: atRisk, name: 'At-Risk', itemStyle: { color: '#f97316' } },
+            { value: dormant, name: 'Dormant', itemStyle: { color: '#dc2626' } },
+          ],
+        },
+      ],
+    };
+  }, [users]);
+
+  // Filter users by last login group
+  const filteredTableUsers = useMemo(() => {
+    const now = Date.now();
+    const active = users.filter((u) => !u.is_deleted);
+    if (lastLoginFilter === 'all') return active;
+
+    return active.filter((u) => {
+      if (!u.last_active_at) return lastLoginFilter === 'never';
+      const days = Math.floor((now - new Date(u.last_active_at).getTime()) / (1000 * 60 * 60 * 24));
+      switch (lastLoginFilter) {
+        case 'last7': return days <= 6;
+        case '7-14': return days >= 7 && days <= 13;
+        case '14-30': return days >= 14 && days <= 29;
+        case '30-60': return days >= 30 && days <= 59;
+        case '60-90': return days >= 60 && days <= 89;
+        case '90+': return days >= 90;
+        case 'never': return false;
+        default: return true;
+      }
+    });
+  }, [users, lastLoginFilter]);
+
   // Table columns
   const columns: DataTableColumn<UserSummary>[] = [
     {
@@ -398,6 +557,7 @@ export default function UsersPage() {
       <ChartCard
         title="DAU Trend"
         subtitle="Daily Active Users with 7-day moving average"
+        infoTooltip="Shows the number of unique users who interacted with the platform each day. The dashed line is a 7-day moving average to smooth out daily fluctuations and reveal the underlying trend."
         isLoading={dailyLoading}
       >
         <LineChart options={dauTrendOptions} height="320px" />
@@ -408,6 +568,7 @@ export default function UsersPage() {
         <ChartCard
           title="Message Volatility"
           subtitle="Message volume and distinct users by day of week"
+          infoTooltip="Compares total message volume (blue) against distinct user count (green) for each day of the week. Helps identify peak usage days and whether spikes are driven by more users or more messages per user."
           isLoading={heatmapLoading}
         >
           <BarChart options={volatilityOptions} height="320px" />
@@ -416,22 +577,69 @@ export default function UsersPage() {
         <ChartCard
           title="Messages Distribution"
           subtitle="User engagement segmentation"
+          infoTooltip="Groups users by how many messages they sent. Shows the distribution of light users (1-5 messages) through power users (100+). A healthy platform has users spread across multiple buckets rather than concentrated in just one."
           isLoading={summaryLoading}
         >
           <BarChart options={messagesDistributionOptions} height="320px" />
         </ChartCard>
       </div>
 
+      {/* User Engagement Overview */}
+      <div>
+        <h2 className="text-lg font-semibold text-text-primary mb-4">User Engagement Overview</h2>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <ChartCard
+            title="Users by Last Login"
+            subtitle="Recency of last user activity"
+            infoTooltip="Groups users by how recently they last interacted with the platform. Green bars indicate recent activity, red bars indicate users who haven't logged in recently or at all. Helps identify how many users are at risk of churning."
+            isLoading={summaryLoading}
+          >
+            <BarChart options={usersByLastLoginOptions} height="320px" />
+          </ChartCard>
+
+          <ChartCard
+            title="User Activity Status"
+            subtitle="Active vs. at-risk vs. dormant users"
+            infoTooltip="Summarizes user engagement into three groups: Active (last 30 days), At-Risk (30–90 days since last login), and Dormant (90+ days or never logged in). A healthy platform should have most users in the Active segment."
+            isLoading={summaryLoading}
+          >
+            <DonutChart options={userActivityStatusOptions} height="320px" />
+          </ChartCard>
+        </div>
+      </div>
+
       {/* User Activity Table */}
-      <DataTable
-        columns={columns}
-        data={users.filter((u) => !u.is_deleted)}
-        searchable
-        searchKeys={['email']}
-        exportFilename={`user-activity-${from}-${to}.csv`}
-        isLoading={summaryLoading}
-        onRowClick={(row) => setSelectedUserId(row.user_id)}
-      />
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-text-primary">User Activity</h2>
+          <div className="flex items-center gap-3">
+            <label className="text-sm text-text-secondary">Last Login:</label>
+            <select
+              value={lastLoginFilter}
+              onChange={(e) => setLastLoginFilter(e.target.value)}
+              className="px-3 py-1.5 border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary bg-white"
+            >
+              <option value="all">All Users</option>
+              <option value="last7">Last 7 days</option>
+              <option value="7-14">7–14 days</option>
+              <option value="14-30">14–30 days</option>
+              <option value="30-60">30–60 days</option>
+              <option value="60-90">60–90 days</option>
+              <option value="90+">90+ days</option>
+              <option value="never">Never</option>
+            </select>
+          </div>
+        </div>
+        <DataTable
+          columns={columns}
+          data={filteredTableUsers}
+          searchable
+          searchKeys={['email']}
+          exportFilename={`user-activity-${from}-${to}.csv`}
+          isLoading={summaryLoading}
+          onRowClick={(row) => setSelectedUserId(row.user_id)}
+        />
+      </div>
 
       {/* User Detail SlideOver */}
       <SlideOver

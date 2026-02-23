@@ -434,13 +434,39 @@ export default async function usersRoutes(fastify: FastifyInstance) {
   );
 
   // GET /api/v1/users/summary
-  fastify.get<{ Reply: ApiResponse<UserSummary[]> }>(
+  fastify.get<{ Querystring: QueryParams; Reply: ApiResponse<UserSummary[]> }>(
     '/summary',
-    async (_request, reply) => {
-      const cacheKey = 'users:summary';
+    async (request, reply) => {
+      const { from, to } = request.query;
+      const hasDateFilter = from && to;
+      const cacheKey = hasDateFilter ? `users:summary:${from}:${to}` : 'users:summary';
 
       try {
-        const sql = `
+        const sql = hasDateFilter
+          ? `
+          SELECT
+            u.user_id,
+            u.email,
+            u.organization_id as org,
+            COUNT(DISTINCT DATE_TRUNC('day', c.date_day))::integer as conversations,
+            COALESCE(SUM(c.total_requests), 0)::integer as messages,
+            COALESCE(SUM(c.total_tokens), 0)::bigint as tokens,
+            COALESCE(SUM(c.est_cost_usd), 0)::numeric as cost,
+            MAX(all_activity.last_active) as last_active_at,
+            u.account_created_at,
+            u.is_deleted
+          FROM gold.dim_users u
+          LEFT JOIN gold.mart_llm_cost_by_user_model_day c
+            ON u.user_id = c.user_id AND c.date_day >= $1 AND c.date_day <= $2
+          LEFT JOIN LATERAL (
+            SELECT MAX(date_day) as last_active
+            FROM gold.mart_llm_cost_by_user_model_day
+            WHERE user_id = u.user_id
+          ) all_activity ON true
+          GROUP BY u.user_id, u.email, u.organization_id, u.account_created_at, u.is_deleted
+          ORDER BY cost DESC
+        `
+          : `
           SELECT
             u.user_id,
             u.email,
@@ -462,12 +488,13 @@ export default async function usersRoutes(fastify: FastifyInstance) {
           cacheKey,
           cacheTTL,
           sql,
-          []
+          hasDateFilter ? [from, to] : []
         );
 
         return {
           data: rows,
           meta: {
+            ...(hasDateFilter ? { from, to } : {}),
             generated_at: new Date().toISOString(),
             cached,
           },

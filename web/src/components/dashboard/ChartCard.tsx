@@ -1,8 +1,36 @@
-import { Download, FileX } from 'lucide-react';
+'use client';
+
+import { useState } from 'react';
+import { Download, FileX, Info } from 'lucide-react';
+
+function InfoIcon({ tooltip }: { tooltip: string }) {
+  const [show, setShow] = useState(false);
+
+  return (
+    <div className="relative inline-block">
+      <button
+        onMouseEnter={() => setShow(true)}
+        onMouseLeave={() => setShow(false)}
+        onClick={() => setShow(!show)}
+        className="p-0.5 rounded-full hover:bg-slate-100 transition-colors"
+        aria-label="Chart info"
+      >
+        <Info size={16} className="text-text-secondary" />
+      </button>
+      {show && (
+        <div className="absolute z-50 left-1/2 -translate-x-1/2 top-full mt-2 w-64 p-3 bg-slate-800 text-white text-xs rounded-lg shadow-lg leading-relaxed">
+          <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-slate-800 rotate-45" />
+          {tooltip}
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface ChartCardProps {
   title: string;
   subtitle?: string;
+  infoTooltip?: string;
   children: React.ReactNode;
   isLoading?: boolean;
   isEmpty?: boolean;
@@ -12,6 +40,7 @@ interface ChartCardProps {
 export default function ChartCard({
   title,
   subtitle,
+  infoTooltip,
   children,
   isLoading = false,
   isEmpty = false,
@@ -31,7 +60,10 @@ export default function ChartCard({
       <div className="bg-white rounded-xl shadow-sm p-6">
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h3 className="text-lg font-semibold text-text-primary">{title}</h3>
+            <div className="flex items-center gap-2">
+              <h3 className="text-lg font-semibold text-text-primary">{title}</h3>
+              {infoTooltip && <InfoIcon tooltip={infoTooltip} />}
+            </div>
             {subtitle && <p className="text-sm text-text-secondary mt-1">{subtitle}</p>}
           </div>
         </div>
@@ -47,7 +79,10 @@ export default function ChartCard({
     <div className="bg-white rounded-xl shadow-sm p-6">
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h3 className="text-lg font-semibold text-text-primary">{title}</h3>
+          <div className="flex items-center gap-2">
+            <h3 className="text-lg font-semibold text-text-primary">{title}</h3>
+            {infoTooltip && <InfoIcon tooltip={infoTooltip} />}
+          </div>
           {subtitle && <p className="text-sm text-text-secondary mt-1">{subtitle}</p>}
         </div>
         {onExport && (
