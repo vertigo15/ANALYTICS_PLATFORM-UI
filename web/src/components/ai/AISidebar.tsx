@@ -3,7 +3,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { usePathname } from 'next/navigation';
 import { X, Trash2, ChevronDown, ChevronUp, Send, Loader2, GripVertical } from 'lucide-react';
-import { useAIStore, MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH } from '@/store/ai';
+import { useAIStore } from '@/store/ai';
 import { useFiltersStore } from '@/store/filters';
 import ChatMessage from './ChatMessage';
 import SuggestedQuestions from './SuggestedQuestions';
