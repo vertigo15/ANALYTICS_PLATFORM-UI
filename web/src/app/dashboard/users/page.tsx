@@ -203,8 +203,8 @@ export default function UsersPage() {
     const dayData = new Map<number, { messages: number; users: number }>();
     (heatmap || []).forEach((h) => {
       const existing = dayData.get(h.day_of_week) || { messages: 0, users: 0 };
-      existing.messages += h.message_count;
-      existing.users += h.distinct_users;
+      existing.messages += Number(h.message_count);
+      existing.users = Number(h.distinct_users); // Same value for all hours per day, don't sum
       dayData.set(h.day_of_week, existing);
     });
 
