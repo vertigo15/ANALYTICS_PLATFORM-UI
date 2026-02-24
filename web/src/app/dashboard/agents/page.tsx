@@ -36,7 +36,7 @@ export default function AgentsPage() {
   );
 
   const { data: summaryData, isLoading: summaryLoading } = useSWR<ApiResponse<AgentSummary[]>>(
-    '/agents/summary',
+    `/agents/summary?${queryParams}`,
     fetcher
   );
 
@@ -219,59 +219,62 @@ export default function AgentsPage() {
     };
   }, [topAgents, kpis]);
 
-  // Agent Activity Over Time Chart
+  // Agent Activity Over Time Chart (messages per day from performance data)
   const activityChartOptions: EChartsOption = useMemo(() => {
-    const dates = Array.from(new Set(performance.map((p) => p.date_day))).sort();
-    const top5Agents = topAgents.slice(0, 5);
-    
-    const agentsToShow = selectedAgentId
-      ? agents.filter((a) => a.agent_id === selectedAgentId)
-      : top5Agents;
+    if (performance.length === 0) return { title: { text: 'No activity data for this period', left: 'center', top: 'center', textStyle: { color: '#9CA3AF', fontSize: 14 } } };
 
-    const series = agentsToShow.map((agent, idx) => ({
-      name: agent.agent_name,
-      type: 'line' as const,
-      smooth: true,
-      data: dates.map((date) => {
-        const entry = performance.find(
-          (p) => p.date_day === date && p.agent_id === agent.agent_id
-        );
-        return entry ? entry.total_conversations : 0;
-      }),
-      lineStyle: {
-        width: agent.agent_id === selectedAgentId ? 3 : 2,
-        opacity: selectedAgentId && agent.agent_id !== selectedAgentId ? 0.3 : 1,
-      },
-      itemStyle: {
-        color: CHART_COLORS[idx % CHART_COLORS.length],
-      },
-    }));
+    const dates = Array.from(new Set(performance.map((p) => p.date_day))).sort();
+    // Get top 5 agents by total messages in this period
+    const agentTotals = new Map<string, { name: string; total: number }>();
+    performance.forEach((p) => {
+      const cur = agentTotals.get(p.agent_id) || { name: p.agent_name, total: 0 };
+      cur.total += Number(p.total_messages) || 0;
+      agentTotals.set(p.agent_id, cur);
+    });
+    const top5Ids = Array.from(agentTotals.entries())
+      .sort((a, b) => b[1].total - a[1].total)
+      .slice(0, 5)
+      .map(([id]) => id);
+
+    const agentIdsToShow = selectedAgentId ? [selectedAgentId] : top5Ids;
+
+    const series = agentIdsToShow.map((agentId, idx) => {
+      const info = agentTotals.get(agentId);
+      return {
+        name: info?.name || agentId,
+        type: 'line' as const,
+        smooth: true,
+        data: dates.map((date) => {
+          const entry = performance.find(
+            (p) => p.date_day === date && p.agent_id === agentId
+          );
+          return entry ? Number(entry.total_messages) || 0 : 0;
+        }),
+        lineStyle: {
+          width: agentId === selectedAgentId ? 3 : 2,
+        },
+        itemStyle: {
+          color: CHART_COLORS[idx % CHART_COLORS.length],
+        },
+      };
+    });
 
     return {
-      tooltip: {
-        trigger: 'axis',
-      },
+      tooltip: { trigger: 'axis' },
       legend: {
-        data: agentsToShow.map((a) => a.agent_name),
+        data: series.map((s) => s.name),
         top: 0,
       },
-      grid: {
-        left: '3%',
-        right: '4%',
-        bottom: '3%',
-        containLabel: true,
-      },
+      grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
       xAxis: {
         type: 'category',
         boundaryGap: false,
         data: dates.map(formatDateShort),
       },
-      yAxis: {
-        type: 'value',
-      },
+      yAxis: { type: 'value' },
       series,
     };
-  }, [performance, topAgents, selectedAgentId, agents]);
+  }, [performance, selectedAgentId]);
 
   // Cost per Agent Chart
   const costChartOptions: EChartsOption = useMemo(() => {
@@ -291,6 +294,7 @@ export default function AgentsPage() {
           return `${agent.agent_name}<br/>
                   Cost: ${formatCost(agent.total_est_cost_usd)}<br/>
                   Messages: ${agent.total_messages}<br/>
+                  Tokens: ${formatTokens(agent.total_tokens)}<br/>
                   Cost/Msg: ${formatCost(costPerMsg)}`;
         },
       },
@@ -395,13 +399,31 @@ export default function AgentsPage() {
     };
   }, [performance, selectedAgentId]);
 
+  // Table date slicer state
+  const [tableFrom, setTableFrom] = useState(from);
+  const [tableTo, setTableTo] = useState(to);
+
+  // Sync slicer bounds when main filter changes
+  useMemo(() => {
+    setTableFrom(from);
+    setTableTo(to);
+  }, [from, to]);
+
+  // Fetch table data with slicer dates
+  const tableQueryParams = new URLSearchParams({ from: tableFrom, to: tableTo }).toString();
+  const { data: tableData, isLoading: tableLoading } = useSWR<ApiResponse<AgentSummary[]>>(
+    `/agents/summary?${tableQueryParams}`,
+    fetcher
+  );
+  const tableAgents = (tableData?.data || []).filter((a) => !a.is_deleted);
+
   // Table columns
   const columns: DataTableColumn<AgentSummary>[] = [
     {
       key: 'agent_name',
       header: 'Agent Name',
       sortable: true,
-      width: '15%',
+      width: '20%',
     },
     {
       key: 'agent_type',
@@ -413,77 +435,47 @@ export default function AgentsPage() {
             value === 'cortex' ? 'success' :
             value === 'workflow' ? 'warning' : 'pending'
           }
-          label={String(value)}
+          label={String(value || 'unknown')}
         />
       ),
-      width: '8%',
-    },
-    {
-      key: 'owner_email',
-      header: 'Owner Email',
-      sortable: true,
-      width: '15%',
-    },
-    {
-      key: 'total_conversations',
-      header: 'Conversations',
-      sortable: true,
       width: '10%',
     },
     {
-      key: 'total_unique_users',
-      header: 'Unique Users',
+      key: 'total_messages',
+      header: 'Messages',
       sortable: true,
-      width: '10%',
-    },
-    {
-      key: 'avg_messages_per_conv',
-      header: 'Avg Msgs/Conv',
-      sortable: true,
-      render: (_value, row) => {
-        const avg = row.total_conversations > 0
-          ? row.total_messages / row.total_conversations
-          : 0;
-        return avg.toFixed(1);
-      },
-      width: '10%',
+      render: (value) => Number(value || 0).toLocaleString(),
+      width: '12%',
     },
     {
       key: 'total_tokens',
-      header: 'Total Tokens',
+      header: 'Tokens',
       sortable: true,
-      render: (value) => formatTokens(value as number),
-      width: '10%',
+      render: (value) => formatTokens(Number(value || 0)),
+      width: '14%',
     },
     {
       key: 'total_est_cost_usd',
       header: 'Total Cost',
       sortable: true,
       render: (value) => (
-        <span className="font-bold">{formatCost(value as number)}</span>
+        <span className="font-bold">{formatCost(Number(value || 0))}</span>
       ),
-      width: '10%',
+      width: '12%',
     },
     {
-      key: 'satisfaction_rate',
-      header: 'Satisfaction Rate',
+      key: 'total_unique_users',
+      header: 'Unique Users',
       sortable: true,
-      render: (value) => {
-        const rate = value as number;
-        const color = rate >= 80 ? 'bg-success' : rate >= 60 ? 'bg-warning' : 'bg-danger';
-        return (
-          <div className="flex items-center gap-2">
-            <div className="flex-1 bg-slate-200 rounded-full h-2">
-              <div
-                className={`${color} h-2 rounded-full`}
-                style={{ width: `${rate}%` }}
-              />
-            </div>
-            <span className="text-xs font-medium">{rate.toFixed(0)}%</span>
-          </div>
-        );
-      },
+      render: (value) => Number(value || 0).toLocaleString(),
       width: '12%',
+    },
+    {
+      key: 'last_interacted_at',
+      header: 'Last Active',
+      sortable: true,
+      render: (value) => value ? formatRelativeTime(value as string) : '—',
+      width: '14%',
     },
   ];
 
@@ -536,16 +528,56 @@ export default function AgentsPage() {
         </ChartCard>
       </div>
 
-      {/* Agent Leaderboard Table */}
-      <DataTable
-        columns={columns}
-        data={agents.filter((a) => !a.is_deleted)}
-        searchable
-        searchKeys={['agent_name', 'owner_email']}
-        exportFilename={`agent-performance-${from}-${to}.csv`}
-        isLoading={summaryLoading}
-        onRowClick={(row) => setSelectedAgentId(row.agent_id)}
-      />
+      {/* Agent Leaderboard */}
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-bold text-text-primary">Agent Leaderboard</h2>
+        </div>
+
+        {/* Date Range Slicer */}
+        <div className="bg-white rounded-lg shadow-sm p-4">
+          <div className="flex items-center gap-4 flex-wrap">
+            <span className="text-sm font-medium text-text-secondary">Date Range Slicer</span>
+            <div className="flex items-center gap-2">
+              <input
+                type="date"
+                value={tableFrom}
+                min={from}
+                max={tableTo}
+                onChange={(e) => setTableFrom(e.target.value)}
+                className="px-3 py-1.5 border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+              />
+              <span className="text-text-secondary">to</span>
+              <input
+                type="date"
+                value={tableTo}
+                min={tableFrom}
+                max={to}
+                onChange={(e) => setTableTo(e.target.value)}
+                className="px-3 py-1.5 border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+              />
+            </div>
+            {(tableFrom !== from || tableTo !== to) && (
+              <button
+                onClick={() => { setTableFrom(from); setTableTo(to); }}
+                className="px-3 py-1.5 text-xs bg-slate-100 text-text-secondary rounded-lg hover:bg-slate-200 transition-colors"
+              >
+                Reset
+              </button>
+            )}
+          </div>
+        </div>
+
+        <DataTable
+          columns={columns}
+          data={tableAgents}
+          searchable
+          searchKeys={['agent_name']}
+          exportFilename={`agent-leaderboard-${tableFrom}-${tableTo}.csv`}
+          isLoading={tableLoading}
+          onRowClick={(row) => setSelectedAgentId(row.agent_id)}
+        />
+      </div>
 
       {/* Agent Detail SlideOver */}
       <SlideOver

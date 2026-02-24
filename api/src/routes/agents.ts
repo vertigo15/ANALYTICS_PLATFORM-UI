@@ -91,43 +91,91 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // GET /api/v1/agents/summary
-  fastify.get<{ Reply: ApiResponse<AgentSummary[]> }>('/summary', async (_request, reply) => {
+  // GET /api/v1/agents/summary?from=&to= (optional date filter)
+  fastify.get<{ Querystring: QueryParams; Reply: ApiResponse<AgentSummary[]> }>('/summary', async (request, reply) => {
+    const { from, to } = request.query;
     const cacheTTL = 3300;
-    const cacheKey = 'agents:summary';
+    const cacheKey = `agents:summary:${from || 'all'}:${to || 'all'}`;
 
     try {
+      let sql: string;
+      let params: string[] = [];
+
+      if (from && to) {
+        // Date-filtered summary derived from mart_llm_cost_by_user_model_day
+        sql = `
+          WITH filtered AS (
+            SELECT
+              c.agent_id,
+              c.agent_name,
+              COALESCE(SUM(c.total_requests), 0) as total_messages,
+              COALESCE(SUM(c.total_tokens), 0) as total_tokens,
+              COALESCE(SUM(c.est_cost_usd), 0) as total_est_cost_usd,
+              COUNT(DISTINCT c.user_id) as total_unique_users
+            FROM gold.mart_llm_cost_by_user_model_day c
+            WHERE c.agent_id IS NOT NULL
+              AND c.date_day >= $1 AND c.date_day <= $2
+            GROUP BY c.agent_id, c.agent_name
+          )
+          SELECT
+            f.agent_id,
+            COALESCE(f.agent_name, a.name) as agent_name,
+            COALESCE(a.type, 'unknown') as agent_type,
+            '' as owner_email,
+            f.total_unique_users,
+            0 as total_conversations,
+            f.total_messages,
+            f.total_tokens,
+            f.total_est_cost_usd,
+            0 as satisfaction_rate,
+            0 as total_positive_reactions,
+            0 as total_negative_reactions,
+            NULL as last_interacted_at,
+            COALESCE(a.is_deleted, false) as is_deleted
+          FROM filtered f
+          LEFT JOIN gold.dim_agents a ON f.agent_id = a.agent_id
+          ORDER BY f.total_messages DESC`;
+        params = [from, to];
+      } else {
+        // Full summary from mart_agent_summary
+        sql = `
+          SELECT 
+            agent_id,
+            agent_name,
+            agent_type,
+            owner_email,
+            COALESCE(total_unique_users, 0) as total_unique_users,
+            COALESCE(total_conversations, 0) as total_conversations,
+            COALESCE(total_messages, 0) as total_messages,
+            COALESCE(total_tokens, 0) as total_tokens,
+            COALESCE(total_est_cost_usd, 0) as total_est_cost_usd,
+            COALESCE(
+              CASE 
+                WHEN (total_positive_reactions + total_negative_reactions) > 0
+                THEN (total_positive_reactions::float / (total_positive_reactions + total_negative_reactions)) * 100
+                ELSE 0
+              END, 0
+            ) as satisfaction_rate,
+            COALESCE(total_positive_reactions, 0) as total_positive_reactions,
+            COALESCE(total_negative_reactions, 0) as total_negative_reactions,
+            last_interacted_at::text,
+            is_deleted
+          FROM gold.mart_agent_summary
+          ORDER BY total_messages DESC`;
+      }
+
       const { rows, cached } = await queryWithCache<AgentSummary>(
         cacheKey,
         cacheTTL,
-        `SELECT 
-          agent_id,
-          agent_name,
-          agent_type,
-          owner_email,
-          total_unique_users,
-          total_conversations,
-          total_messages,
-          total_tokens,
-          total_est_cost_usd,
-          COALESCE(
-            CASE 
-              WHEN (total_positive_reactions + total_negative_reactions) > 0
-              THEN (total_positive_reactions::float / (total_positive_reactions + total_negative_reactions)) * 100
-              ELSE 0
-            END, 0
-          ) as satisfaction_rate,
-          total_positive_reactions,
-          total_negative_reactions,
-          last_interacted_at::text,
-          is_deleted
-         FROM gold.mart_agent_summary
-         ORDER BY total_conversations DESC`
+        sql,
+        params
       );
 
       return {
         data: rows,
         meta: {
+          from,
+          to,
           generated_at: new Date().toISOString(),
           cached,
         },
@@ -139,7 +187,7 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // GET /api/v1/agents/performance
+  // GET /api/v1/agents/performance - derived from mart_llm_cost_by_user_model_day
   fastify.get<{ Querystring: QueryParams; Reply: ApiResponse<AgentPerformance[]> }>(
     '/performance',
     async (request, reply) => {
@@ -159,15 +207,16 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
             date_day::text,
             agent_id,
             agent_name,
-            unique_users,
-            total_conversations,
-            total_messages,
-            avg_messages_per_conv,
-            est_cost_usd,
-            reactions_positive,
-            reactions_negative
-          FROM gold.mart_agent_performance_daily
-          WHERE date_day >= $1 AND date_day <= $2
+            COUNT(DISTINCT user_id)::int as unique_users,
+            0 as total_conversations,
+            COALESCE(SUM(total_requests), 0)::int as total_messages,
+            0 as avg_messages_per_conv,
+            COALESCE(SUM(est_cost_usd), 0)::float as est_cost_usd,
+            0 as reactions_positive,
+            0 as reactions_negative
+          FROM gold.mart_llm_cost_by_user_model_day
+          WHERE agent_id IS NOT NULL
+            AND date_day >= $1 AND date_day <= $2
         `;
         const params: (string | null)[] = [from, to];
 
@@ -176,7 +225,7 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
           params.push(agent_id);
         }
 
-        sql += ` ORDER BY date_day, agent_name`;
+        sql += ` GROUP BY date_day, agent_id, agent_name ORDER BY date_day, agent_name`;
 
         const { rows, cached } = await queryWithCache<AgentPerformance>(
           cacheKey,
