@@ -1,6 +1,7 @@
 export const PAGES = {
   COST: '/dashboard/cost',
   AGENTS: '/dashboard/agents',
+  ANALYTICS: '/dashboard/analytics',
   USERS: '/dashboard/users',
   DOCUMENTS: '/dashboard/documents',
   OPERATIONS: '/dashboard/operations',
@@ -9,6 +10,7 @@ export const PAGES = {
 export const PAGE_NAMES: Record<string, string> = {
   [PAGES.COST]: 'Cost & Tokens',
   [PAGES.AGENTS]: 'Agent Performance',
+  [PAGES.ANALYTICS]: 'Agent Analytics',
   [PAGES.USERS]: 'User Activity',
   [PAGES.DOCUMENTS]: 'Document & RAG Health',
   [PAGES.OPERATIONS]: 'Platform Operations',

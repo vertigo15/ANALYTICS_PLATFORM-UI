@@ -116,6 +116,7 @@ export interface UserCostDetail {
 export interface CostDetailRow extends Record<string, unknown> {
   date: string;
   user_email: string;
+  agent_name: string;
   model: string;
   provider: string;
   requests: number;
@@ -159,23 +160,18 @@ export interface AgentPerformance {
   total_conversations: number;
   total_messages: number;
   avg_messages_per_conv: number;
+  total_tokens: number;
   est_cost_usd: number;
   reactions_positive: number;
   reactions_negative: number;
 }
 
 export interface AgentKPIs {
-  current: {
-    active_agents: number;
-    total_conversations: number;
-    avg_satisfaction_rate: number;
-    most_used_agent: { agent_id: string; agent_name: string; total_conversations: number } | null;
-  };
-  previous: {
-    active_agents: number;
-    total_conversations: number;
-    avg_satisfaction_rate: number;
-  };
+  active_agents: number;
+  total_agent_cost: number;
+  total_tokens: number;
+  avg_unique_users_per_day: number;
+  avg_messages_per_agent: number;
 }
 
 export interface AgentDetail extends AgentSummary {
@@ -196,16 +192,18 @@ export interface UserKPIs {
     wau: number;
     mau: number;
     new_users: number;
+    new_active_users: number;
     interactions_per_dau: number;
-    power_user_ratio: number;
+    churn_rate: number;
   };
   previous: {
     dau: number;
     wau: number;
     mau: number;
     new_users: number;
+    new_active_users: number;
     interactions_per_dau: number;
-    power_user_ratio: number;
+    churn_rate: number;
   };
   dau_sparkline: number[];
   wau_sparkline: number[];
@@ -301,6 +299,15 @@ export interface DocumentByTechnique {
   avg_words_per_chunk: number;
 }
 
+export interface DocumentByTypeDaily {
+  date: string;
+  content_type_group: string;
+  doc_count: number;
+  total_size_bytes: number;
+  total_embeddings: number;
+  est_cost_usd: number;
+}
+
 export interface DocumentListItem extends Record<string, unknown> {
   document_id: string;
   file_name: string;
@@ -322,6 +329,31 @@ export interface DocumentListResponse {
     pageSize: number;
     total: number;
   };
+}
+
+export interface TopUploader {
+  email: string;
+  total_documents: number;
+  processed: number;
+  failed: number;
+  success_rate: number;
+}
+
+export interface ContentTypeBreakdown {
+  content_type_group: string;
+  doc_count: number;
+  total_size_bytes: number;
+  processed: number;
+  failed: number;
+  success_rate: number;
+}
+
+export interface FailureCorrelation {
+  dimension: string;
+  bucket: string;
+  total: number;
+  failed: number;
+  failure_rate: number;
 }
 
 // Platform Operations interfaces
@@ -362,6 +394,90 @@ export interface PlatformEvent extends Record<string, unknown> {
   event_type: string;
   description: string;
   severity: 'info' | 'warning' | 'error';
+}
+
+// Agent Analytics interfaces
+export interface AnalyticsKPIs {
+  total_conversations: number;
+  avg_response_time_sec: number;
+  avg_turns_per_conversation: number;
+  tool_call_rate: number;
+}
+
+export interface ConversationSummary extends Record<string, unknown> {
+  conversation_id: string;
+  title: string | null;
+  date: string;
+  user_email: string;
+  turns: number;
+  duration_sec: number;
+  outcome: string;
+  has_tool_calls: boolean;
+  likes: number;
+  dislikes: number;
+}
+
+export interface ConversationListResponse {
+  rows: ConversationSummary[];
+  total: number;
+}
+
+export interface OutcomeBreakdown {
+  outcome: string;
+  count: number;
+  percentage: number;
+}
+
+export interface ResponseTimeTrend {
+  date_day: string;
+  avg_response_time_sec: number;
+}
+
+export interface DepthOverTime {
+  date_day: string;
+  avg_turns: number;
+  total_conversations: number;
+}
+
+export interface ConversationMessage {
+  message_id: string;
+  role: string;
+  content?: string;
+  agent_id?: string | null;
+  agent_name?: string | null;
+  has_tool_calls: boolean;
+  finish_reason: string | null;
+  reaction_type: string | null;
+  timestamp: string;
+  latency_ms: number | null;
+  tool_calls?: string | null;
+  user_email?: string | null;
+}
+
+export interface AgentHandoff {
+  agent_id: string;
+  agent_name: string;
+  order_index: number;
+  start_time: string;
+  end_time: string;
+  latency_ms: number;
+  status: string;
+  message_count: number;
+}
+
+export interface ConversationDetail {
+  conversation_id: string;
+  date: string;
+  duration_sec: number;
+  turns: number;
+  user_email: string | null;
+  outcome: string;
+  has_tool_calls: boolean;
+  positive_reactions: number;
+  negative_reactions: number;
+  agents_involved: string[];
+  handoffs: AgentHandoff[];
+  messages: ConversationMessage[];
 }
 
 export async function apiFetch<T>(path: string, params?: Record<string, string>): Promise<T> {

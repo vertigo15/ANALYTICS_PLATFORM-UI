@@ -43,7 +43,7 @@ Available tables:
 Available tables:
 - gold.mart_agent_performance_daily: columns date_day(date), agent_id(uuid), agent_name(text), agent_type(text), owner_user_id(uuid), unique_users(int), total_conversations(int), total_messages(int), avg_messages_per_conv(numeric), total_input_tokens(bigint), total_output_tokens(bigint), est_cost_usd(numeric), tool_calls_count(int), reactions_positive(int), reactions_negative(int)
 - gold.mart_agent_summary: columns agent_id(uuid), agent_name(text), agent_type(text), owner_email(text), created_at(timestamptz), last_interacted_at(timestamptz), total_unique_users(int), total_conversations(int), total_messages(int), total_tokens(bigint), total_est_cost_usd(numeric), total_positive_reactions(int), total_negative_reactions(int), satisfaction_rate(numeric), is_deleted(boolean)
-- gold.dim_agents: columns agent_key(int), agent_id(uuid), name(text), type(text), owner_user_id(uuid), is_deleted(boolean)
+- gold.dim_agents: columns agent_key(int), agent_id(uuid), agent_name(text), agent_type(text), owner_user_id(uuid), owner_email(text), is_public(boolean), is_active(boolean), model(text), agent_created_at(timestamptz), last_interacted_at(timestamptz), is_deleted(boolean)
 `,
     users: `
 Available tables:

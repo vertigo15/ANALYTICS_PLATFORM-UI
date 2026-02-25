@@ -142,6 +142,7 @@ export default function CostPage() {
       deltaDirection: 'up-bad' as const,
       isLoading: summaryLoading,
       icon: '💰',
+      tooltip: 'Estimated total spend on LLM API calls during the selected period, based on token pricing per model.',
     },
     {
       title: 'Average Cost per User',
@@ -149,6 +150,7 @@ export default function CostPage() {
       subtitle: `${topUsers.length} active users`,
       isLoading: summaryLoading || topUsersLoading,
       icon: '👤',
+      tooltip: 'Total cost divided by the number of distinct users who made at least one request in the period.',
     },
     {
       title: 'Total Tokens',
@@ -158,6 +160,7 @@ export default function CostPage() {
       deltaDirection: 'up-bad' as const,
       isLoading: summaryLoading,
       icon: '🔢',
+      tooltip: 'Sum of all input, output, and reasoning tokens consumed across every model during the selected period.',
     },
     {
       title: 'Cost per 1M Tokens',
@@ -166,6 +169,7 @@ export default function CostPage() {
       deltaDirection: 'up-bad' as const,
       isLoading: summaryLoading,
       icon: '📊',
+      tooltip: 'Blended cost efficiency across all models. A rising value may indicate heavier use of more expensive models.',
     },
     {
       title: 'Avg Cost per Request',
@@ -173,6 +177,7 @@ export default function CostPage() {
       subtitle: `${(summary?.current.total_requests || 0).toLocaleString()} requests`,
       isLoading: summaryLoading,
       icon: '⚡',
+      tooltip: 'Total cost divided by the number of LLM API requests. Useful for spotting prompt-size or model-mix changes.',
     },
     {
       title: 'Cost per User-Day',
@@ -180,6 +185,7 @@ export default function CostPage() {
       subtitle: 'Daily average per user',
       isLoading: summaryLoading || topUsersLoading,
       icon: '📅',
+      tooltip: 'Estimated daily cost per active user, calculated as total cost ÷ active users ÷ 30 days.',
     },
   ];
 
@@ -212,9 +218,10 @@ export default function CostPage() {
         trigger: 'axis',
         formatter: (params: any) => {
           if (!Array.isArray(params)) return '';
-          const sorted = params.sort((a: any, b: any) => b.value - a.value);
-          let result = `${sorted[0].axisValueLabel}<br/>`;
-          sorted.forEach((p: any) => {
+          const nonZero = params.filter((p: any) => p.value > 0).sort((a: any, b: any) => b.value - a.value);
+          if (nonZero.length === 0) return '';
+          let result = `${nonZero[0].axisValueLabel}<br/>`;
+          nonZero.forEach((p: any) => {
             result += `${p.marker} ${p.seriesName}: ${formatCost(p.value)}<br/>`;
           });
           return result;
@@ -289,7 +296,12 @@ export default function CostPage() {
             },
           },
           label: {
-            show: false,
+            show: true,
+            formatter: (params: any) => {
+              if (params.percent < 5) return '';
+              return `${params.name.length > 15 ? params.name.slice(0, 15) + '…' : params.name}\n${formatCost(params.value)}`;
+            },
+            fontSize: 11,
           },
         },
       ],
@@ -520,6 +532,17 @@ export default function CostPage() {
           stack: 'total',
           data: tokensByModel.map((t) => t.reasoning_tokens),
           itemStyle: { color: '#94A3B8' },
+          label: {
+            show: true,
+            position: 'right',
+            formatter: (params: any) => {
+              const idx = params.dataIndex;
+              const total = tokensByModel[idx].total_tokens;
+              return total > 0 ? formatTokens(total) : '';
+            },
+            fontSize: 10,
+            color: '#666',
+          },
         },
       ],
     };
@@ -570,6 +593,13 @@ export default function CostPage() {
               color: CHART_COLORS[index % CHART_COLORS.length],
             },
           })),
+          label: {
+            show: true,
+            position: 'right',
+            formatter: (params: any) => formatCost(params.value),
+            fontSize: 10,
+            color: '#666',
+          },
         },
       ],
     };
@@ -594,19 +624,30 @@ export default function CostPage() {
       key: 'user_email',
       header: 'User Email',
       sortable: true,
-      width: '20%',
+      width: '16%',
+    },
+    {
+      key: 'agent_name',
+      header: 'Agent',
+      sortable: true,
+      width: '12%',
+      render: (value) => (
+        <span className={`text-xs ${value === 'Direct' ? 'text-text-secondary' : 'text-primary font-medium'}`}>
+          {String(value)}
+        </span>
+      ),
     },
     {
       key: 'model',
       header: 'Model',
       sortable: true,
-      width: '15%',
+      width: '12%',
     },
     {
       key: 'provider',
       header: 'Provider',
       sortable: true,
-      width: '10%',
+      width: '9%',
     },
     {
       key: 'requests',
@@ -663,12 +704,12 @@ export default function CostPage() {
       <KpiRow kpis={kpis} />
 
       {/* Daily Cost Trend */}
-      <ChartCard title="Daily Cost Trend" subtitle="Cost by model over time" isLoading={dailyLoading}>
+      <ChartCard title="Daily Cost Trend" subtitle="Cost by model over time" infoTooltip="Shows daily estimated LLM spending broken down by model. Each line represents a model's cost over time. Useful for spotting cost spikes and identifying which models drive spend." isLoading={dailyLoading}>
         <LineChart options={dailyChartOptions} height="350px" />
       </ChartCard>
 
       {/* Vendor Cost Trend */}
-      <ChartCard title="Vendor Cost Trend Over Time" subtitle="Cost trends by provider" isLoading={dailyLoading || modelLoading}>
+      <ChartCard title="Vendor Cost Trend Over Time" subtitle="Cost trends by provider" infoTooltip="Aggregates daily costs by provider (e.g. Azure OpenAI, OpenAI). Helps compare spending across vendors and detect provider-level cost shifts." isLoading={dailyLoading || modelLoading}>
         <LineChart options={vendorTrendOptions} height="350px" />
       </ChartCard>
 
@@ -676,6 +717,7 @@ export default function CostPage() {
       <ChartCard
         title="Cost vs Usage Analysis"
         subtitle="Bubble size represents request volume"
+        infoTooltip="Scatter plot showing the relationship between token volume (X-axis) and cost (Y-axis) for each model. Bubble size indicates request count. Models in the upper-left are expensive per token; lower-right are cost-efficient."
         isLoading={modelLoading}
       >
         <div style={{ height: '400px' }}>
@@ -688,6 +730,7 @@ export default function CostPage() {
         <ChartCard
           title="Cost by Model"
           subtitle={selectedModel ? `Filtered: ${selectedModel}` : 'Click to filter table'}
+          infoTooltip="Donut chart showing the proportion of total cost attributable to each model. Click a segment to filter the breakdown table below."
           isLoading={modelLoading}
         >
           <div onClick={() => {
@@ -704,7 +747,7 @@ export default function CostPage() {
           </div>
         </ChartCard>
 
-        <ChartCard title="Token Distribution" subtitle="Actual input, output, and reasoning tokens from transactions" isLoading={tokensByModelLoading}>
+        <ChartCard title="Token Distribution" subtitle="Actual input, output, and reasoning tokens from transactions" infoTooltip="Horizontal stacked bar showing how many input, output, and reasoning tokens each model consumed. Helps identify models with high reasoning overhead or output-heavy usage patterns." isLoading={tokensByModelLoading}>
           <BarChart options={tokenChartOptions} height="280px" />
         </ChartCard>
       </div>
@@ -713,17 +756,22 @@ export default function CostPage() {
       <ChartCard
         title="Top 10 Users by Cost"
         subtitle="Click a bar to view user details"
+        infoTooltip="Horizontal bar chart ranking the 10 highest-spending users. Click a bar to open a detailed view of that user's cost breakdown, daily usage, and recent activity."
         isLoading={topUsersLoading}
       >
         <BarChart options={topUsersChartOptions} height="280px" />
       </ChartCard>
 
       {/* Cost Breakdown Table */}
+      <div className="space-y-2">
+        <h2 className="text-lg font-bold text-text-primary">Daily Usage Breakdown</h2>
+        <p className="text-sm text-text-secondary">Aggregated per user, model, agent, and day</p>
+      </div>
       <DataTable
         columns={columns}
         data={filteredDetails}
         searchable
-        searchKeys={['user_email', 'model']}
+searchKeys={['user_email', 'agent_name', 'model']}
         exportFilename={`cost-breakdown-${from}-${to}.csv`}
         isLoading={detailLoading}
         onRowClick={(row) => {

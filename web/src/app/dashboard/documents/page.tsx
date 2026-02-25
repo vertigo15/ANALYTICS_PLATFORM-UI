@@ -4,20 +4,24 @@ import { useState, useMemo } from 'react';
 import useSWR from 'swr';
 import { fetcher } from '@/lib/fetcher';
 import { useFiltersStore } from '@/store/filters';
-import { formatDateShort } from '@/lib/formatters';
+import { formatDateShort, formatCost } from '@/lib/formatters';
 import { CHART_COLORS } from '@/lib/constants';
 import type {
   ApiResponse,
   DocumentKPIs,
   DocumentFunnel,
+  DocumentByTypeDaily,
   DailyDocument,
   DocumentByTechnique,
   DocumentListResponse,
   DocumentListItem,
+  TopUploader,
+  ContentTypeBreakdown,
+  FailureCorrelation,
 } from '@/lib/api';
 import KpiRow from '@/components/dashboard/KpiRow';
 import ChartCard from '@/components/dashboard/ChartCard';
-import FunnelChart from '@/components/charts/FunnelChart';
+import ProcessingStepBar from '@/components/dashboard/ProcessingStepBar';
 import StackedBarChart from '@/components/charts/StackedBarChart';
 import BarChart from '@/components/charts/BarChart';
 import DonutChart from '@/components/charts/DonutChart';
@@ -25,11 +29,14 @@ import DataTable, { DataTableColumn } from '@/components/dashboard/DataTable';
 import StatusBadge from '@/components/dashboard/StatusBadge';
 import type { EChartsOption } from 'echarts';
 
+type DocMeasure = 'count' | 'size' | 'embeddings' | 'cost';
+
 export default function DocumentsPage() {
   const { from, to } = useFiltersStore();
   const [activeTab, setActiveTab] = useState<'all' | 'PROCESSED' | 'FAILED' | 'PENDING'>('all');
   const [page, setPage] = useState(1);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
+  const [docMeasure, setDocMeasure] = useState<DocMeasure>('count');
 
   const queryParams = new URLSearchParams({ from, to }).toString();
   const listParams = new URLSearchParams({
@@ -44,8 +51,8 @@ export default function DocumentsPage() {
     fetcher
   );
 
-  const { data: funnelData, isLoading: funnelLoading } = useSWR<ApiResponse<DocumentFunnel[]>>(
-    '/documents/funnel',
+  const { data: byTypeDailyData, isLoading: byTypeDailyLoading } = useSWR<ApiResponse<DocumentByTypeDaily[]>>(
+    `/documents/by-type-daily?${queryParams}`,
     fetcher
   );
 
@@ -64,12 +71,36 @@ export default function DocumentsPage() {
     fetcher
   );
 
+  const { data: funnelData, isLoading: funnelLoading } = useSWR<ApiResponse<DocumentFunnel[]>>(
+    '/documents/funnel',
+    fetcher
+  );
+
+  const { data: topUploadersData, isLoading: topUploadersLoading } = useSWR<ApiResponse<TopUploader[]>>(
+    `/documents/top-uploaders?${queryParams}`,
+    fetcher
+  );
+
+  const { data: contentTypeData, isLoading: contentTypeLoading } = useSWR<ApiResponse<ContentTypeBreakdown[]>>(
+    `/documents/content-type-breakdown?${queryParams}`,
+    fetcher
+  );
+
+  const { data: correlationsData, isLoading: correlationsLoading } = useSWR<ApiResponse<FailureCorrelation[]>>(
+    `/documents/failure-correlations?${queryParams}`,
+    fetcher
+  );
+
   const kpis = kpisData?.data;
-  const funnel = funnelData?.data || [];
+  const byTypeDaily = byTypeDailyData?.data || [];
   const daily = dailyData?.data || [];
   const techniques = techniqueData?.data || [];
   const documents = listData?.data || [];
   const pagination = listData?.pagination;
+  const funnel = funnelData?.data || [];
+  const topUploaders = topUploadersData?.data || [];
+  const contentTypes = contentTypeData?.data || [];
+  const correlations = correlationsData?.data || [];
 
   // KPI cards
   const kpiCards = [
@@ -96,57 +127,72 @@ export default function DocumentsPage() {
     },
   ];
 
-  // Funnel Chart
-  const funnelOptions: EChartsOption = useMemo(() => {
-    const funnelOrder = ['UPLOADED', 'PROCESSING', 'PROCESSED'];
-    const funnelStages = funnel
-      .filter((f) => funnelOrder.includes(f.status))
-      .sort((a, b) => funnelOrder.indexOf(a.status) - funnelOrder.indexOf(b.status));
+  // Measure config for Documents by Time chart
+  const docMeasureConfig: Record<DocMeasure, { label: string; key: keyof DocumentByTypeDaily; formatter: (v: number) => string }> = {
+    count: { label: 'Document Count', key: 'doc_count', formatter: (v) => v.toLocaleString() },
+    size: { label: 'Size (bytes)', key: 'total_size_bytes', formatter: (v) => {
+      if (v >= 1024 * 1024) return `${(v / (1024 * 1024)).toFixed(1)} MB`;
+      if (v >= 1024) return `${(v / 1024).toFixed(1)} KB`;
+      return `${v} B`;
+    }},
+    embeddings: { label: 'Embeddings', key: 'total_embeddings', formatter: (v) => v.toLocaleString() },
+    cost: { label: 'Cost', key: 'est_cost_usd', formatter: formatCost },
+  };
 
-    const failedCount = funnel.find((f) => f.status === 'FAILED')?.count || 0;
+  // Documents by Time Chart (stacked bar by document type)
+  const docsByTimeOptions: EChartsOption = useMemo(() => {
+    if (byTypeDaily.length === 0) return { title: { text: 'No document data for this period', left: 'center', top: 'center', textStyle: { color: '#9CA3AF', fontSize: 14 } } };
+
+    const cfg = docMeasureConfig[docMeasure];
+    const dates = Array.from(new Set(byTypeDaily.map((d) => d.date))).sort();
+    const types = Array.from(new Set(byTypeDaily.map((d) => d.content_type_group))).sort();
+
+    const series = types.map((type, idx) => ({
+      name: type,
+      type: 'bar' as const,
+      stack: 'total',
+      data: dates.map((date) => {
+        const entry = byTypeDaily.find((d) => d.date === date && d.content_type_group === type);
+        return entry ? Number(entry[cfg.key]) || 0 : 0;
+      }),
+      itemStyle: { color: CHART_COLORS[idx % CHART_COLORS.length] },
+    }));
 
     return {
       tooltip: {
-        trigger: 'item',
-        formatter: '{b}: {c}',
+        trigger: 'axis',
+        axisPointer: { type: 'shadow' },
+        valueFormatter: (value: any) => cfg.formatter(Number(value)),
       },
-      series: [
-        {
-          name: 'Funnel',
-          type: 'funnel',
-          left: '10%',
-          width: '80%',
-          label: {
-            show: true,
-            position: 'inside',
-            formatter: '{b}: {c}',
-          },
-          data: funnelStages.map((f) => ({
-            value: f.count,
-            name: f.status,
-          })),
-        },
-        {
-          name: 'Failed',
-          type: 'funnel',
-          left: '85%',
-          width: '10%',
-          label: {
-            show: true,
-            position: 'left',
-            formatter: 'Failed: {c}',
-          },
-          data: [
-            {
-              value: failedCount,
-              name: 'FAILED',
-              itemStyle: { color: '#DC2626' },
-            },
-          ],
-        },
-      ],
+      legend: {
+        data: types,
+        top: 0,
+      },
+      grid: {
+        left: '3%',
+        right: '4%',
+        bottom: '3%',
+        containLabel: true,
+      },
+      xAxis: {
+        type: 'category',
+        data: dates.map(formatDateShort),
+      },
+      yAxis: {
+        type: 'value',
+        axisLabel: docMeasure === 'cost'
+          ? { formatter: (v: number) => formatCost(v) }
+          : docMeasure === 'size'
+          ? { formatter: (v: number) => {
+              if (v >= 1024 * 1024) return `${(v / (1024 * 1024)).toFixed(0)} MB`;
+              if (v >= 1024) return `${(v / 1024).toFixed(0)} KB`;
+              return `${v} B`;
+            }}
+          : {},
+      },
+      series,
     };
-  }, [funnel]);
+  }, [byTypeDaily, docMeasure]);
 
   // Daily Stacked Bar Chart
   const dailyStackedOptions: EChartsOption = useMemo(() => {
@@ -314,6 +360,232 @@ export default function DocumentsPage() {
     return techniques.some(t => Number(t.avg_words_per_chunk) > 0);
   }, [techniques]);
 
+  // Content Type Breakdown Donut
+  const contentTypeBreakdownOptions: EChartsOption = useMemo(() => {
+    if (contentTypes.length === 0) return { title: { text: 'No data', left: 'center', top: 'center', textStyle: { color: '#9CA3AF', fontSize: 14 } } };
+
+    return {
+      tooltip: {
+        trigger: 'item',
+        formatter: (params: any) => {
+          const d = contentTypes.find((c) => c.content_type_group === params.name);
+          return `${params.name}<br/>Count: ${params.value}<br/>Success Rate: ${d ? Number(d.success_rate).toFixed(1) : 0}%`;
+        },
+      },
+      legend: {
+        orient: 'vertical',
+        left: 'left',
+        top: 'middle',
+      },
+      series: [
+        {
+          name: 'Content Type',
+          type: 'pie',
+          radius: ['40%', '70%'],
+          center: ['60%', '50%'],
+          avoidLabelOverlap: false,
+          itemStyle: {
+            borderRadius: 10,
+            borderColor: '#fff',
+            borderWidth: 2,
+          },
+          label: {
+            show: true,
+            formatter: '{b}\n{d}%',
+          },
+          emphasis: {
+            label: {
+              show: true,
+              fontSize: 14,
+              fontWeight: 'bold',
+            },
+          },
+          data: contentTypes.map((c, idx) => ({
+            name: c.content_type_group,
+            value: c.doc_count,
+            itemStyle: { color: CHART_COLORS[idx % CHART_COLORS.length] },
+          })),
+        },
+      ],
+    };
+  }, [contentTypes]);
+
+  // Document Size by Type Donut
+  const sizeByTypeOptions: EChartsOption = useMemo(() => {
+    if (contentTypes.length === 0) return { title: { text: 'No data', left: 'center', top: 'center', textStyle: { color: '#9CA3AF', fontSize: 14 } } };
+
+    const formatSize = (bytes: number) => {
+      if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+      if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+      if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+      return `${bytes} B`;
+    };
+
+    return {
+      tooltip: {
+        trigger: 'item',
+        formatter: (params: any) => {
+          const d = contentTypes.find((c) => c.content_type_group === params.name);
+          return `${params.name}<br/>Size: ${formatSize(Number(params.value))}<br/>Docs: ${d?.doc_count || 0}`;
+        },
+      },
+      legend: {
+        orient: 'vertical',
+        left: 'left',
+        top: 'middle',
+      },
+      series: [
+        {
+          name: 'Size by Type',
+          type: 'pie',
+          radius: ['40%', '70%'],
+          center: ['60%', '50%'],
+          avoidLabelOverlap: false,
+          itemStyle: {
+            borderRadius: 10,
+            borderColor: '#fff',
+            borderWidth: 2,
+          },
+          label: {
+            show: true,
+            formatter: (params: any) => `${params.name}\n${formatSize(Number(params.value))}`,
+          },
+          data: contentTypes.map((c, idx) => ({
+            name: c.content_type_group,
+            value: Number(c.total_size_bytes),
+            itemStyle: { color: CHART_COLORS[idx % CHART_COLORS.length] },
+          })),
+        },
+      ],
+    };
+  }, [contentTypes]);
+
+  // Top Uploaders Horizontal Bar
+  const topUploadersOptions: EChartsOption = useMemo(() => {
+    if (topUploaders.length === 0) return { title: { text: 'No uploader data', left: 'center', top: 'center', textStyle: { color: '#9CA3AF', fontSize: 14 } } };
+
+    const emails = topUploaders.map((u) => u.email.split('@')[0]); // short label
+    const counts = topUploaders.map((u) => u.total_documents);
+    const rates = topUploaders.map((u) => Number(u.success_rate));
+
+    return {
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'shadow' },
+        formatter: (params: any) => {
+          const idx = params[0]?.dataIndex;
+          if (idx === undefined) return '';
+          const u = topUploaders[idx];
+          return `${u.email}<br/>Documents: ${u.total_documents}<br/>Success Rate: ${Number(u.success_rate).toFixed(1)}%<br/>Failed: ${u.failed}`;
+        },
+      },
+      grid: {
+        left: '25%',
+        right: '12%',
+        top: '3%',
+        bottom: '3%',
+        containLabel: true,
+      },
+      xAxis: [
+        {
+          type: 'value',
+          name: 'Documents',
+          position: 'bottom',
+        },
+      ],
+      yAxis: {
+        type: 'category',
+        data: emails,
+        axisLabel: { fontSize: 11 },
+        inverse: true,
+      },
+      series: [
+        {
+          name: 'Documents',
+          type: 'bar',
+          data: counts.map((val, i) => ({
+            value: val,
+            itemStyle: {
+              color: rates[i] >= 90 ? '#16A34A' : rates[i] >= 70 ? '#D97706' : '#DC2626',
+            },
+          })),
+          label: {
+            show: true,
+            position: 'right',
+            formatter: (params: any) => `${rates[params.dataIndex].toFixed(0)}%`,
+            fontSize: 10,
+            color: '#6B7280',
+          },
+        },
+      ],
+    };
+  }, [topUploaders]);
+
+  // Failure Correlations Grouped Bar
+  const failureCorrelationsOptions: EChartsOption = useMemo(() => {
+    if (correlations.length === 0) return { title: { text: 'No failure data', left: 'center', top: 'center', textStyle: { color: '#9CA3AF', fontSize: 14 } } };
+
+    const dimensionLabels: Record<string, string> = {
+      content_type: 'Content Type',
+      file_size: 'File Size',
+      parsing_technique: 'Technique',
+    };
+
+    const buckets = correlations.map((c) => `${dimensionLabels[c.dimension] || c.dimension}: ${c.bucket}`);
+    const rates = correlations.map((c) => Number(c.failure_rate));
+    const totals = correlations.map((c) => c.total);
+
+    return {
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'shadow' },
+        formatter: (params: any) => {
+          const idx = params[0]?.dataIndex;
+          if (idx === undefined) return '';
+          const c = correlations[idx];
+          return `${buckets[idx]}<br/>Failure Rate: ${Number(c.failure_rate).toFixed(1)}%<br/>Failed: ${c.failed} / ${c.total}`;
+        },
+      },
+      grid: {
+        left: '30%',
+        right: '8%',
+        top: '3%',
+        bottom: '3%',
+        containLabel: true,
+      },
+      xAxis: {
+        type: 'value',
+        max: (value: { max: number }) => Math.max(value.max * 1.1, 10),
+        axisLabel: { formatter: '{value}%' },
+      },
+      yAxis: {
+        type: 'category',
+        data: buckets,
+        axisLabel: { fontSize: 10 },
+        inverse: true,
+      },
+      series: [
+        {
+          name: 'Failure Rate',
+          type: 'bar',
+          data: rates.map((val) => ({
+            value: val,
+            itemStyle: {
+              color: val >= 20 ? '#DC2626' : val >= 10 ? '#D97706' : '#16A34A',
+            },
+          })),
+          label: {
+            show: true,
+            position: 'right',
+            formatter: (params: any) => `${totals[params.dataIndex]} docs`,
+            fontSize: 9,
+            color: '#6B7280',
+          },
+        },
+      ],
+    };
+  }, [correlations]);
+
   // Embedding Coverage Donut
   const embeddingCoverageOptions: EChartsOption = useMemo(() => {
     const withEmbeddings = documents.filter((d) => d.has_embeddings).length;
@@ -480,14 +752,73 @@ export default function DocumentsPage() {
     <div className="p-8 space-y-6">
       <KpiRow kpis={kpiCards} />
 
-      {/* Funnel Chart - Full Width */}
+      {/* Processing Step Bar — full width */}
+      <ProcessingStepBar data={funnel} isLoading={funnelLoading} />
+
+      {/* Documents by Time - Full Width */}
       <ChartCard
-        title="Processing Funnel"
-        subtitle="Document processing pipeline"
-        isLoading={funnelLoading}
+        title="Documents by Time"
+        subtitle="Grouped by document type"
+        isLoading={byTypeDailyLoading}
       >
-        <FunnelChart options={funnelOptions} height="200px" />
+        <div className="flex gap-1 mb-3">
+          {(Object.keys(docMeasureConfig) as DocMeasure[]).map((m) => (
+            <button
+              key={m}
+              onClick={() => setDocMeasure(m)}
+              className={`px-3 py-1 text-xs rounded-full transition-colors ${
+                docMeasure === m
+                  ? 'bg-primary text-white'
+                  : 'bg-slate-100 text-text-secondary hover:bg-slate-200'
+              }`}
+            >
+              {docMeasureConfig[m].label}
+            </button>
+          ))}
+        </div>
+        <BarChart options={docsByTimeOptions} height="280px" />
       </ChartCard>
+
+      {/* Content Type Breakdown & Document Size by Type */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <ChartCard
+          title="Content Type Breakdown"
+          subtitle="Document count by type with success rate"
+          infoTooltip="Shows the distribution of document types (PDF, Image, etc.) and their respective success rates"
+          isLoading={contentTypeLoading}
+        >
+          <DonutChart options={contentTypeBreakdownOptions} height="280px" />
+        </ChartCard>
+
+        <ChartCard
+          title="Document Size by Type"
+          subtitle="Total storage consumed per content type"
+          isLoading={contentTypeLoading}
+        >
+          <DonutChart options={sizeByTypeOptions} height="280px" />
+        </ChartCard>
+      </div>
+
+      {/* Top Uploaders & Failure Correlations */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <ChartCard
+          title="Top Uploaders"
+          subtitle="Most active uploaders — bar color = success rate"
+          infoTooltip="Green ≥90%, Amber 70-89%, Red <70% success rate. Label shows exact success %."
+          isLoading={topUploadersLoading}
+        >
+          <BarChart options={topUploadersOptions} height="320px" />
+        </ChartCard>
+
+        <ChartCard
+          title="Failure Correlations"
+          subtitle="Failure rate by content type, file size & technique"
+          infoTooltip="Identifies which dimensions correlate with higher failure rates. Red ≥20%, Amber 10-19%, Green <10%."
+          isLoading={correlationsLoading}
+        >
+          <BarChart options={failureCorrelationsOptions} height="320px" />
+        </ChartCard>
+      </div>
 
       {/* Daily Volume & Success by Technique */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

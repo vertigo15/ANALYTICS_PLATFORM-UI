@@ -10,6 +10,7 @@ import usersRoutes from './routes/users';
 import documentsRoutes from './routes/documents';
 import aiRoutes from './routes/ai';
 import operationsRoutes from './routes/operations';
+import analyticsRoutes from './routes/analytics';
 
 const fastify = Fastify({
   logger: {
@@ -32,6 +33,7 @@ async function start() {
     await fastify.register(documentsRoutes, { prefix: '/api/v1/documents' });
     await fastify.register(aiRoutes, { prefix: '/api/v1/ai' });
     await fastify.register(operationsRoutes, { prefix: '/api/v1/operations' });
+    await fastify.register(analyticsRoutes, { prefix: '/api/v1/analytics' });
 
     const host = process.env.API_HOST || '0.0.0.0';
     const port = parseInt(process.env.API_PORT || '3001');

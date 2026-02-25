@@ -62,6 +62,25 @@ export default function UsersPage() {
   const users = summaryData?.data || [];
   const userDetail = userDetailData?.data;
 
+  // Compute sparkline date labels (last 7 days from `to`, in DESC order to match API)
+  const sparklineDateLabels = useMemo(() => {
+    const labels: string[] = [];
+    const toDate = new Date(to);
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(toDate);
+      d.setDate(d.getDate() - i);
+      labels.push(formatDateShort(d.toISOString()));
+    }
+    return labels;
+  }, [to]);
+
+  // Compute average DAU for the filtered period from daily data
+  const avgDau = useMemo(() => {
+    if (daily.length === 0) return 0;
+    const total = daily.reduce((sum, d) => sum + Number(d.dau), 0);
+    return Math.round(total / daily.length);
+  }, [daily]);
+
   // Calculate deltas
   const dauDelta = kpis
     ? ((kpis.current.dau - kpis.previous.dau) / (kpis.previous.dau || 1)) * 100
@@ -83,21 +102,33 @@ export default function UsersPage() {
     ? ((kpis.current.interactions_per_dau - kpis.previous.interactions_per_dau) / (kpis.previous.interactions_per_dau || 1)) * 100
     : 0;
 
-  const powerUserRatioDelta = kpis
-    ? ((kpis.current.power_user_ratio - kpis.previous.power_user_ratio) / (kpis.previous.power_user_ratio || 1)) * 100
+  const newActiveUsersDelta = kpis
+    ? ((kpis.current.new_active_users - kpis.previous.new_active_users) / (kpis.previous.new_active_users || 1)) * 100
+    : 0;
+
+  // DAU/MAU stickiness ratio (computed on frontend)
+  const dauMauRatio = useMemo(() => {
+    const mau = kpis?.current.mau || 0;
+    if (mau === 0) return 0;
+    return (avgDau / mau) * 100;
+  }, [avgDau, kpis]);
+
+  const churnRateDelta = kpis
+    ? ((kpis.current.churn_rate - kpis.previous.churn_rate) / (kpis.previous.churn_rate || 1)) * 100
     : 0;
 
   // KPI cards
   const kpiCards = [
     {
-      title: 'DAU',
-      value: kpis?.current.dau.toString() || '0',
+      title: 'Avg DAU',
+      value: avgDau.toLocaleString() || '0',
       previousValue: kpis?.previous.dau.toString(),
       delta: dauDelta,
       deltaDirection: 'up-good' as const,
-      isLoading: kpisLoading,
-      tooltip: 'Daily Active Users - Unique users who made at least one request on the most recent day (yesterday)',
+      isLoading: kpisLoading || dailyLoading,
+      tooltip: 'Average Daily Active Users - Average number of unique users per day across the filtered period. Calculated as: sum of daily DAU ÷ number of days with data.',
       sparklineData: kpis?.dau_sparkline?.map(n => Number(n)) || [],
+      sparklineLabels: sparklineDateLabels,
     },
     {
       title: 'WAU',
@@ -108,6 +139,7 @@ export default function UsersPage() {
       isLoading: kpisLoading,
       tooltip: 'Weekly Active Users - Unique users active in the last 7 days',
       sparklineData: kpis?.wau_sparkline?.map(n => Number(n)) || [],
+      sparklineLabels: sparklineDateLabels,
     },
     {
       title: 'MAU',
@@ -119,31 +151,50 @@ export default function UsersPage() {
       tooltip: 'Monthly Active Users - Unique users active in the last 30 days',
     },
     {
-      title: 'New Users',
+      title: 'New Signups',
       value: kpis?.current.new_users.toString() || '0',
       previousValue: kpis?.previous.new_users.toString(),
       delta: newUsersDelta,
       deltaDirection: 'up-good' as const,
       isLoading: kpisLoading,
-      tooltip: 'Users who created accounts within the selected date range',
+      tooltip: 'Users who created accounts within the selected date range.',
+    },
+    {
+      title: 'New Active Users',
+      value: kpis?.current.new_active_users.toString() || '0',
+      previousValue: kpis?.previous.new_active_users.toString(),
+      delta: newActiveUsersDelta,
+      deltaDirection: 'up-good' as const,
+      isLoading: kpisLoading,
+      tooltip: 'Users whose very first platform interaction occurred during this period. Measures true adoption — not just sign-up, but actual usage.',
     },
     {
       title: 'Interactions/DAU',
-      value: kpis?.current.interactions_per_dau.toFixed(1) || '0',
-      previousValue: kpis?.previous.interactions_per_dau.toFixed(1),
+      value: (kpis?.current.interactions_per_dau ?? 0) >= 1000
+        ? formatNumberWithCommas(Math.round(kpis?.current.interactions_per_dau ?? 0))
+        : (kpis?.current.interactions_per_dau ?? 0).toFixed(1),
+      previousValue: (kpis?.previous.interactions_per_dau ?? 0) >= 1000
+        ? formatNumberWithCommas(Math.round(kpis?.previous.interactions_per_dau ?? 0))
+        : kpis?.previous.interactions_per_dau.toFixed(1),
       delta: interactionsPerDauDelta,
       deltaDirection: 'up-good' as const,
       isLoading: kpisLoading,
-      tooltip: 'Average interactions per daily active user. Low values (< 5) suggest users aren\'t finding the AI useful. Very high values (> 50) may indicate users are struggling to get clear answers.',
+      tooltip: 'Average interactions per daily active user (per-day ratio average). Calculated as: for each day compute messages/DAU, then average across all days.',
     },
     {
-      title: 'Power User Ratio',
-      value: `${kpis?.current.power_user_ratio.toFixed(1) || '0'}%`,
-      previousValue: `${kpis?.previous.power_user_ratio.toFixed(1)}%`,
-      delta: powerUserRatioDelta,
-      deltaDirection: 'up-good' as const,
+      title: 'DAU/MAU',
+      value: `${dauMauRatio.toFixed(1)}%`,
+      isLoading: kpisLoading || dailyLoading,
+      tooltip: 'Stickiness ratio — AVG(DAU over the period) ÷ MAU. A higher percentage means more monthly users return daily. Industry benchmarks: 10-20% is typical, 50%+ is exceptional.',
+    },
+    {
+      title: 'Churn Rate',
+      value: `${(kpis?.current.churn_rate ?? 0).toFixed(1)}%`,
+      previousValue: `${(kpis?.previous.churn_rate ?? 0).toFixed(1)}%`,
+      delta: churnRateDelta,
+      deltaDirection: 'up-bad' as const,
       isLoading: kpisLoading,
-      tooltip: 'Percentage of users who were active on multiple days during the selected period (adaptive threshold based on period length). Higher ratios indicate the tool is becoming a daily habit.',
+      tooltip: 'Percentage of users who were active in the previous period but did not return in this period. Lower is better.',
     },
   ];
 
@@ -269,6 +320,13 @@ export default function UsersPage() {
           type: 'bar',
           data: messagesData,
           itemStyle: { color: CHART_COLORS[0] },
+          label: {
+            show: true,
+            position: 'top',
+            formatter: (params: any) => formatNumberWithCommas(params.value),
+            fontSize: 10,
+            color: '#666',
+          },
         },
         {
           name: 'Distinct Users',
@@ -276,6 +334,13 @@ export default function UsersPage() {
           yAxisIndex: 1,
           data: usersData,
           itemStyle: { color: CHART_COLORS[2] },
+          label: {
+            show: true,
+            position: 'top',
+            formatter: (params: any) => formatNumberWithCommas(params.value),
+            fontSize: 10,
+            color: '#666',
+          },
         },
       ],
     };

@@ -8,6 +8,7 @@ import FilterBar from './FilterBar';
 const PAGE_TITLES: Record<string, string> = {
   '/dashboard/cost': 'Cost & Tokens',
   '/dashboard/agents': 'Agent Performance',
+  '/dashboard/analytics': 'Agent Analytics',
   '/dashboard/users': 'User Activity',
   '/dashboard/documents': 'Document & RAG Health',
   '/dashboard/operations': 'Platform Operations',

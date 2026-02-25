@@ -32,23 +32,18 @@ interface AgentPerformance {
   total_conversations: number;
   total_messages: number;
   avg_messages_per_conv: number;
+  total_tokens: number;
   est_cost_usd: number;
   reactions_positive: number;
   reactions_negative: number;
 }
 
 interface AgentKPIs {
-  current: {
-    active_agents: number;
-    total_conversations: number;
-    avg_satisfaction_rate: number;
-    most_used_agent: { agent_id: string; agent_name: string; total_conversations: number } | null;
-  };
-  previous: {
-    active_agents: number;
-    total_conversations: number;
-    avg_satisfaction_rate: number;
-  };
+  active_agents: number;
+  total_agent_cost: number;
+  total_tokens: number;
+  avg_unique_users_per_day: number;
+  avg_messages_per_agent: number;
 }
 
 interface AgentDetail extends AgentSummary {
@@ -119,8 +114,8 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
           )
           SELECT
             f.agent_id,
-            COALESCE(f.agent_name, a.name) as agent_name,
-            COALESCE(a.type, 'unknown') as agent_type,
+            COALESCE(f.agent_name, a.agent_name) as agent_name,
+            COALESCE(a.agent_type, 'unknown') as agent_type,
             '' as owner_email,
             f.total_unique_users,
             0 as total_conversations,
@@ -211,6 +206,7 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
             0 as total_conversations,
             COALESCE(SUM(total_requests), 0)::int as total_messages,
             0 as avg_messages_per_conv,
+            COALESCE(SUM(total_tokens), 0)::bigint as total_tokens,
             COALESCE(SUM(est_cost_usd), 0)::float as est_cost_usd,
             0 as reactions_positive,
             0 as reactions_negative
@@ -266,87 +262,56 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
       const cacheTTL = 3300;
 
       try {
-        // Use mart_agent_summary since mart_agent_performance_daily may be empty
+        // Derive KPIs from mart_llm_cost_by_user_model_day (date-filtered)
         const sql = `
-          WITH summary_stats AS (
-            SELECT 
-              COUNT(*) FILTER (WHERE total_messages > 0 AND is_deleted = false) as active_agents,
-              COALESCE(SUM(total_messages), 0) as total_conversations,
-              COALESCE(AVG(
-                CASE 
-                  WHEN (total_positive_reactions + total_negative_reactions) > 0
-                  THEN (total_positive_reactions::float / (total_positive_reactions + total_negative_reactions)) * 100
-                  ELSE NULL
-                END
-              ), 0) as avg_satisfaction_rate
-            FROM gold.mart_agent_summary
-            WHERE is_deleted = false
-          ),
-          most_used AS (
-            SELECT 
+          WITH daily AS (
+            SELECT
+              date_day,
               agent_id,
-              agent_name,
-              total_messages as total_conversations
-            FROM gold.mart_agent_summary
-            WHERE is_deleted = false AND total_messages > 0
-            ORDER BY total_messages DESC
-            LIMIT 1
+              COALESCE(SUM(total_requests), 0) as day_messages,
+              COALESCE(SUM(total_tokens), 0) as day_tokens,
+              COALESCE(SUM(est_cost_usd), 0) as day_cost,
+              COUNT(DISTINCT user_id) as day_unique_users
+            FROM gold.mart_llm_cost_by_user_model_day
+            WHERE agent_id IS NOT NULL
+              AND date_day >= $1 AND date_day <= $2
+            GROUP BY date_day, agent_id
+          ),
+          daily_users AS (
+            SELECT date_day, SUM(day_unique_users) as total_unique_users
+            FROM daily
+            GROUP BY date_day
           )
-          SELECT 
-            json_build_object(
-              'active_agents', COALESCE(ss.active_agents, 0),
-              'total_conversations', COALESCE(ss.total_conversations, 0),
-              'avg_satisfaction_rate', COALESCE(ss.avg_satisfaction_rate, 0),
-              'most_used_agent', CASE 
-                WHEN mu.agent_id IS NOT NULL THEN json_build_object(
-                  'agent_id', mu.agent_id,
-                  'agent_name', mu.agent_name,
-                  'total_conversations', mu.total_conversations
-                )
-                ELSE NULL
-              END
-            ) as current,
-            json_build_object(
-              'active_agents', 0,
-              'total_conversations', 0,
-              'avg_satisfaction_rate', 0
-            ) as previous
-          FROM summary_stats ss
-          LEFT JOIN most_used mu ON true
+          SELECT
+            COUNT(DISTINCT d.agent_id)::int as active_agents,
+            COALESCE(SUM(d.day_cost), 0)::float as total_agent_cost,
+            COALESCE(SUM(d.day_tokens), 0)::bigint as total_tokens,
+            COALESCE((SELECT AVG(total_unique_users) FROM daily_users), 0)::float as avg_unique_users_per_day,
+            CASE
+              WHEN COUNT(DISTINCT d.agent_id) > 0
+              THEN (COALESCE(SUM(d.day_messages), 0)::float / COUNT(DISTINCT d.agent_id))
+              ELSE 0
+            END as avg_messages_per_agent
+          FROM daily d
         `;
 
         const { rows, cached } = await queryWithCache<AgentKPIs>(
           cacheKey,
           cacheTTL,
-          sql
+          sql,
+          [from, to]
         );
 
-        if (rows.length === 0) {
-          return {
-            data: {
-              current: {
-                active_agents: 0,
-                total_conversations: 0,
-                avg_satisfaction_rate: 0,
-                most_used_agent: null,
-              },
-              previous: {
-                active_agents: 0,
-                total_conversations: 0,
-                avg_satisfaction_rate: 0,
-              },
-            },
-            meta: {
-              from,
-              to,
-              generated_at: new Date().toISOString(),
-              cached,
-            },
-          };
-        }
+        const defaultKpis: AgentKPIs = {
+          active_agents: 0,
+          total_agent_cost: 0,
+          total_tokens: 0,
+          avg_unique_users_per_day: 0,
+          avg_messages_per_agent: 0,
+        };
 
         return {
-          data: rows[0],
+          data: rows.length > 0 ? rows[0] : defaultKpis,
           meta: {
             from,
             to,

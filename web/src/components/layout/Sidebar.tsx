@@ -8,12 +8,14 @@ import {
   Users,
   FileText,
   Activity,
+  BarChart3,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
   { href: '/dashboard/cost', label: 'Cost & Tokens', icon: DollarSign },
   { href: '/dashboard/users', label: 'User Activity', icon: Users },
   { href: '/dashboard/agents', label: 'Agent Performance', icon: Bot },
+  { href: '/dashboard/analytics', label: 'Agent Analytics', icon: BarChart3 },
   { href: '/dashboard/documents', label: 'Document Health', icon: FileText },
   { href: '/dashboard/operations', label: 'Platform Operations', icon: Activity },
 ];
@@ -28,7 +30,7 @@ export default function Sidebar() {
       </div>
       <nav className="flex-1 px-4">
         {NAV_ITEMS.map((item) => {
-          const isActive = pathname === item.href;
+          const isActive = pathname === item.href || pathname.startsWith(item.href + '/');
           const Icon = item.icon;
           return (
             <Link

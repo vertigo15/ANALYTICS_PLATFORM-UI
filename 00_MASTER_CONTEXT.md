@@ -254,7 +254,7 @@ Drill: User Detail slide-over
 
 ### Document & RAG Health (`/dashboard/documents`)
 KPIs: Total Documents · Success Rate · Avg Chunks/Doc · Currently Failing
-Charts: Processing Funnel · Daily Processing Volume (stacked bar) · Success Rate by Technique (horiz bar) · Chunk Quality (box plot) · Embedding Coverage (donut)
+Charts: Processing Step Bar · Documents by Time (stacked bar by type) · Content Type Breakdown (donut) · Document Size by Type (donut) · Top Uploaders (horiz bar + success rate) · Failure Correlations (horiz bar by dimension) · Daily Processing Volume (stacked bar) · Success Rate by Technique (horiz bar) · Chunk Quality (bar) · Embedding Coverage (donut)
 Table: Document list — File · Type · Technique · Status · Size · Chunks · Words · Embeddings · Uploaded By · Date
 Drill: Failed document expandable row
 

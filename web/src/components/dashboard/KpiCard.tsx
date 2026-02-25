@@ -12,6 +12,7 @@ export interface KpiCardProps {
   icon?: string;
   tooltip?: string;
   sparklineData?: number[];
+  sparklineLabels?: string[];
 }
 
 export default function KpiCard({
@@ -25,6 +26,7 @@ export default function KpiCard({
   icon,
   tooltip,
   sparklineData,
+  sparklineLabels,
 }: KpiCardProps) {
   const [showTooltip, setShowTooltip] = useState(false);
   if (isLoading) {
@@ -69,7 +71,7 @@ export default function KpiCard({
               height: `${(val / max) * 100}%`,
               minHeight: val > 0 ? '2px' : '0px',
             }}
-            title={`${val}`}
+            title={sparklineLabels?.[idx] ? `${sparklineLabels[idx]}: ${val}` : `${val}`}
           />
         ))}
       </div>
