@@ -2,15 +2,19 @@ import { Pool, QueryResult, QueryResultRow } from 'pg';
 import NodeCache from 'node-cache';
 
 const pool = new Pool({
-  host: process.env.ANALYTICS_DB_HOST,
-  port: parseInt(process.env.ANALYTICS_DB_PORT || '5432'),
+  host:     process.env.ANALYTICS_DB_HOST,
+  port:     parseInt(process.env.ANALYTICS_DB_PORT || '5432'),
   database: process.env.ANALYTICS_DB_NAME,
-  user: process.env.ANALYTICS_DB_USER,
+  user:     process.env.ANALYTICS_DB_USER,
   password: process.env.ANALYTICS_DB_PASSWORD,
   ssl: process.env.ANALYTICS_DB_SSLMODE === 'require' ? { rejectUnauthorized: false } : false,
-  max: 20,
+  max: 10,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
+  connectionTimeoutMillis: 5000,
+});
+
+pool.on('error', (err) => {
+  console.error('Unexpected pg pool error:', err);
 });
 
 const cache = new NodeCache();
@@ -22,8 +26,7 @@ export async function query<T extends QueryResultRow = QueryResultRow>(
   const client = await pool.connect();
   try {
     await client.query('SET statement_timeout = 10000');
-    const result = await client.query<T>(sql, params);
-    return result;
+    return await client.query<T>(sql, params);
   } finally {
     client.release();
   }
@@ -36,9 +39,7 @@ export async function queryWithCache<T extends QueryResultRow = QueryResultRow>(
   params: unknown[] = []
 ): Promise<{ rows: T[]; cached: boolean }> {
   const cached = cache.get<T[]>(key);
-  if (cached) {
-    return { rows: cached, cached: true };
-  }
+  if (cached) return { rows: cached, cached: true };
 
   const result = await query<T>(sql, params);
   cache.set(key, result.rows, ttl);

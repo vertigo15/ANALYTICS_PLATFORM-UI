@@ -1,25 +1,17 @@
-FROM node:20-alpine
-
+# ── Stage 1: Build ────────────────────────────────────────────────────────────
+FROM node:20-alpine AS builder
 WORKDIR /app
-
-# Copy package files
 COPY package*.json ./
-
-# Install dependencies
-RUN npm ci --only=production && \
-    npm install typescript @types/node @types/pg -D
-
-# Copy source code
+RUN npm ci
 COPY . .
-
-# Build TypeScript
 RUN npm run build
 
-# Remove dev dependencies
-RUN npm prune --production
-
-# Expose API port
+# ── Stage 2: Production runner ────────────────────────────────────────────────
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./package.json
 EXPOSE 3001
-
-# Start the server
 CMD ["node", "dist/index.js"]
