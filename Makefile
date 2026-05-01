@@ -1,43 +1,43 @@
 # Jeen Analytics Dashboard — environment switcher
-# Usage: make dev | make stg | make prod
+# First time or after code changes: make dev / stg / prod  (builds + starts)
+# Switching env only:               make switch-dev/stg/prod (restarts API, no rebuild)
 
-.PHONY: dev stg prod down restart logs ps build-dev build-stg build-prod
+.PHONY: dev stg prod switch-dev switch-stg switch-prod \
+        down logs logs-api logs-web ps health
 
-# ── Start environments ────────────────────────────────────────────────────────
+# ── First run / after code changes (build + start) ───────────────────────────
 dev:
-	@echo "Starting DEV environment..."
+	@echo "Building and starting DEV..."
 	docker compose --env-file .env.dev up --build -d
-	@echo "Dashboard: http://localhost:3000  (dev DB)"
+	@echo "  http://localhost:3000  [DEV]"
 
 stg:
-	@echo "Starting STAGING environment..."
+	@echo "Building and starting STAGING..."
 	docker compose --env-file .env.stg up --build -d
-	@echo "Dashboard: http://localhost:3000  (stg DB)"
+	@echo "  http://localhost:3000  [STG]"
 
 prod:
-	@echo "Starting PRODUCTION environment..."
+	@echo "Building and starting PRODUCTION..."
 	docker compose --env-file .env.prod up --build -d
-	@echo "Dashboard: http://localhost:3000  (prod DB)"
+	@echo "  http://localhost:3000  [PROD]"
 
-# ── Restart without rebuild (faster, same env) ───────────────────────────────
-restart-dev:
+# ── Fast env switch (restarts only, no image rebuild) ────────────────────────
+# The web image is reused; only the API restarts with the new DB credentials.
+# The env badge in the UI updates automatically from the health endpoint.
+switch-dev:
+	@echo "Switching to DEV (no rebuild)..."
 	docker compose --env-file .env.dev up -d
+	@echo "  http://localhost:3000  [DEV]"
 
-restart-stg:
+switch-stg:
+	@echo "Switching to STAGING (no rebuild)..."
 	docker compose --env-file .env.stg up -d
+	@echo "  http://localhost:3000  [STG]"
 
-restart-prod:
+switch-prod:
+	@echo "Switching to PRODUCTION (no rebuild)..."
 	docker compose --env-file .env.prod up -d
-
-# ── Build only (no start) ─────────────────────────────────────────────────────
-build-dev:
-	docker compose --env-file .env.dev build
-
-build-stg:
-	docker compose --env-file .env.stg build
-
-build-prod:
-	docker compose --env-file .env.prod build
+	@echo "  http://localhost:3000  [PROD]"
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 down:

@@ -21,7 +21,6 @@ services:
       dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
-        NEXT_PUBLIC_APP_ENV: ${APP_ENV:-dev}
     ports:
       - "3000:3000"
     env_file:

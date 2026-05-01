@@ -3,6 +3,7 @@
 import { usePathname } from 'next/navigation';
 import { MessageCircle } from 'lucide-react';
 import { useAIStore } from '@/store/ai';
+import { useEffect, useState } from 'react';
 import FilterBar from './FilterBar';
 
 const PAGE_TITLES: Record<string, string> = {
@@ -20,22 +21,37 @@ const ENV_BADGE: Record<string, { label: string; className: string }> = {
   prod: { label: 'PROD', className: 'bg-red-100 text-red-700 border-red-300 font-bold' },
 };
 
+function useEnv(): string {
+  const [env, setEnv] = useState<string>('');
+
+  useEffect(() => {
+    fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/health`)
+      .then((r) => r.json())
+      .then((d) => setEnv(d.env || 'dev'))
+      .catch(() => setEnv('dev'));
+  }, []);
+
+  return env;
+}
+
 export default function TopBar() {
   const pathname = usePathname();
   const { toggleAISidebar, isAISidebarOpen } = useAIStore();
+  const env = useEnv();
 
   const pageTitle = PAGE_TITLES[pathname] || 'Dashboard';
-  const env = process.env.NEXT_PUBLIC_APP_ENV || 'dev';
-  const badge = ENV_BADGE[env] ?? { label: env.toUpperCase(), className: 'bg-slate-100 text-slate-600 border-slate-200' };
+  const badge = ENV_BADGE[env] ?? (env ? { label: env.toUpperCase(), className: 'bg-slate-100 text-slate-600 border-slate-200' } : null);
 
   return (
     <header className="bg-white border-b border-border">
       <div className="px-8 py-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <h2 className="text-2xl font-bold text-text-primary">{pageTitle}</h2>
-          <span className={`text-xs px-2 py-0.5 rounded-full border font-medium tracking-wide ${badge.className}`}>
-            {badge.label}
-          </span>
+          {badge && (
+            <span className={`text-xs px-2 py-0.5 rounded-full border font-medium tracking-wide ${badge.className}`}>
+              {badge.label}
+            </span>
+          )}
         </div>
         <div>
           <button

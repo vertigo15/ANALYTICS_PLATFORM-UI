@@ -38,5 +38,6 @@ export interface FreshnessData {
 export interface HealthResponse {
   status: string;
   db: string;
+  env: string;
   timestamp: string;
 }
