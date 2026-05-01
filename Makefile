@@ -9,6 +9,7 @@
 #   make switch-dev | switch-stg | switch-prod
 
 .PHONY: dev stg prod switch-dev switch-stg switch-prod \
+        pull-secrets pull-secrets-dev pull-secrets-stg pull-secrets-prod \
         down logs logs-api logs-web ps health
 
 # ── First run / after code changes (build + start) ───────────────────────────
@@ -42,6 +43,20 @@ switch-prod:
 	@echo "Switching to PROD DB (no rebuild)..."
 	APP_ENV=prod docker compose --env-file .env up -d
 	@echo "  http://localhost:3000  [PROD]"
+
+
+# ── Pull DB credentials from K8s / Azure Key Vault ───────────────────────────
+pull-secrets:
+	@bash scripts/pull-secrets.sh all
+
+pull-secrets-dev:
+	@bash scripts/pull-secrets.sh dev
+
+pull-secrets-stg:
+	@bash scripts/pull-secrets.sh stg
+
+pull-secrets-prod:
+	@bash scripts/pull-secrets.sh prod
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 down:
