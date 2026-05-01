@@ -39,5 +39,6 @@ export interface HealthResponse {
   status: string;
   db: string;
   env: string;
+  db_host: string;
   timestamp: string;
 }

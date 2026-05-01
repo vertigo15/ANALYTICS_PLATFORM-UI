@@ -1,8 +1,10 @@
 import { FastifyInstance } from 'fastify';
 import { query } from '../db';
-import { HealthResponse } from '../types';
+import { HealthResponse } from '../types/index';
 
-const ENV = process.env.APP_ENV || 'dev';
+const APP_ENV = process.env.APP_ENV || 'dev';
+const prefix  = APP_ENV.toUpperCase();
+const DB_HOST = process.env[`${prefix}_DB_HOST`] || process.env.ANALYTICS_DB_HOST || 'unknown';
 
 export default async function healthRoutes(fastify: FastifyInstance) {
   fastify.get<{ Reply: HealthResponse }>('/health', async (_request, reply) => {
@@ -11,7 +13,8 @@ export default async function healthRoutes(fastify: FastifyInstance) {
       return {
         status: 'ok',
         db: 'connected',
-        env: ENV,
+        env: APP_ENV,
+        db_host: DB_HOST,
         timestamp: new Date().toISOString(),
       };
     } catch (error) {
@@ -19,7 +22,8 @@ export default async function healthRoutes(fastify: FastifyInstance) {
       return {
         status: 'error',
         db: 'disconnected',
-        env: ENV,
+        env: APP_ENV,
+        db_host: DB_HOST,
         timestamp: new Date().toISOString(),
       };
     }

@@ -1,20 +1,24 @@
 import { Pool, QueryResult, QueryResultRow } from 'pg';
 import NodeCache from 'node-cache';
 
+const env = (process.env.APP_ENV || 'dev').toUpperCase(); // DEV | STG | PROD
+
 const pool = new Pool({
-  host:     process.env.ANALYTICS_DB_HOST,
-  port:     parseInt(process.env.ANALYTICS_DB_PORT || '5432'),
-  database: process.env.ANALYTICS_DB_NAME,
-  user:     process.env.ANALYTICS_DB_USER,
-  password: process.env.ANALYTICS_DB_PASSWORD,
-  ssl: process.env.ANALYTICS_DB_SSLMODE === 'require' ? { rejectUnauthorized: false } : false,
+  host:     process.env[`${env}_DB_HOST`]     || process.env.ANALYTICS_DB_HOST,
+  port:     parseInt(process.env[`${env}_DB_PORT`]  || process.env.ANALYTICS_DB_PORT || '5432'),
+  database: process.env[`${env}_DB_NAME`]     || process.env.ANALYTICS_DB_NAME,
+  user:     process.env[`${env}_DB_USER`]     || process.env.ANALYTICS_DB_USER,
+  password: process.env[`${env}_DB_PASSWORD`] || process.env.ANALYTICS_DB_PASSWORD,
+  ssl: (process.env[`${env}_DB_SSLMODE`] || process.env.ANALYTICS_DB_SSLMODE) === 'require'
+    ? { rejectUnauthorized: false }
+    : false,
   max: 10,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
 });
 
 pool.on('error', (err) => {
-  console.error('Unexpected pg pool error:', err);
+  console.error(`[db] Unexpected pool error (env=${env}):`, err.message);
 });
 
 const cache = new NodeCache();
