@@ -108,22 +108,44 @@ export default function DocumentsPage() {
       title: 'Total Documents',
       value: kpis?.total_documents.toString() || '0',
       isLoading: kpisLoading,
+      tooltip: 'Total documents uploaded in the selected period.',
     },
     {
       title: 'Success Rate',
       value: kpis ? `${Number(kpis.success_rate).toFixed(1)}%` : '0%',
       isLoading: kpisLoading,
+      tooltip: 'Percentage of documents successfully processed (status = PROCESSED).',
     },
     {
-      title: 'Avg Chunks/Doc',
+      title: 'Avg Chunks / Doc',
       value: kpis ? Number(kpis.avg_chunks_per_doc).toFixed(1) : '0',
       isLoading: kpisLoading,
+      tooltip: 'Average number of text chunks generated per successfully processed document.',
     },
     {
       title: 'Currently Failing',
       value: kpis?.currently_failing.toString() || '0',
       subtitle: kpis && kpis.currently_failing > 0 ? 'Requires attention' : undefined,
       isLoading: kpisLoading,
+      tooltip: 'Documents with status FAILED in the selected period.',
+    },
+    {
+      title: 'Avg Words / Chunk',
+      value: kpis ? Number(kpis.avg_words_per_chunk).toFixed(0) : '0',
+      isLoading: kpisLoading,
+      tooltip: 'Average word count per chunk across all parsed documents. Lower values may indicate over-chunking.',
+    },
+    {
+      title: 'Docs with Embeddings',
+      value: kpis?.docs_with_embeddings.toString() || '0',
+      isLoading: kpisLoading,
+      tooltip: 'Number of documents that have at least one embedding stored — ready for RAG retrieval.',
+    },
+    {
+      title: 'Embedding Coverage',
+      value: kpis ? `${(Number(kpis.embedding_coverage) * 100).toFixed(1)}%` : '0%',
+      isLoading: kpisLoading,
+      tooltip: 'Proportion of processed documents that have embeddings. Lower coverage means the RAG index is incomplete.',
     },
   ];
 

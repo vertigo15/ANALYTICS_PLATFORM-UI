@@ -117,7 +117,7 @@ export default function FilterBar() {
           <option value="">All Organisations</option>
           {orgsData?.data.map((org) => (
             <option key={org.organization_id} value={org.organization_id}>
-              {org.organization_id}
+              {org.organization_name || org.organization_id}
             </option>
           ))}
         </select>

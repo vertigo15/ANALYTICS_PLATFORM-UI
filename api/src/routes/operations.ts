@@ -38,6 +38,26 @@ interface PlatformEvent {
   description: string;
   severity: 'info' | 'warning' | 'error';
 }
+interface TriggerKPIs {
+  total_triggers: number;
+  successful_triggers: number;
+  failed_triggers: number;
+  success_rate: number;
+  avg_duration_sec: number;
+  distinct_triggers: number;
+  distinct_target_types: number;
+}
+
+
+interface TriggerKPIs {
+  total_triggers: number;
+  successful_triggers: number;
+  failed_triggers: number;
+  success_rate: number;
+  avg_duration_sec: number;
+  distinct_triggers: number;
+  distinct_target_types: number;
+}
 
 export default async function operationsRoutes(fastify: FastifyInstance) {
   // GET /api/v1/operations/kpis
@@ -349,4 +369,53 @@ export default async function operationsRoutes(fastify: FastifyInstance) {
       throw new Error('Failed to fetch operations events');
     }
   });
+  // GET /api/v1/operations/triggers
+  fastify.get('/triggers', async (request: any, reply) => {
+    const { from, to } = request.query as { from: string; to: string };
+    if (!from || !to) {
+      reply.code(400);
+      throw new Error('from and to query parameters are required');
+    }
+
+    const cacheKey = `operations:triggers:${from}:${to}`;
+    const cacheTTL = 3300;
+
+    try {
+      const { rows, cached } = await queryWithCache<TriggerKPIs>(
+        cacheKey,
+        cacheTTL,
+        `SELECT
+          COUNT(*)::integer                                                      AS total_triggers,
+          COUNT(*) FILTER (WHERE status = 'success')::integer                   AS successful_triggers,
+          COUNT(*) FILTER (WHERE status = 'failed' OR has_error)::integer       AS failed_triggers,
+          ROUND(
+            COUNT(*) FILTER (WHERE status = 'success')::numeric
+            / NULLIF(COUNT(*), 0) * 100, 1
+          )::numeric                                                             AS success_rate,
+          ROUND(AVG(execution_duration_seconds)::numeric, 2)                    AS avg_duration_sec,
+          COUNT(DISTINCT trigger_id)::integer                                   AS distinct_triggers,
+          COUNT(DISTINCT target_type)::integer                                  AS distinct_target_types
+         FROM gold.fact_trigger_executions
+         WHERE execution_created_at >= $1::timestamp
+           AND execution_created_at <= ($2::date + INTERVAL '1 day')`,
+        [from, to]
+      );
+
+      const defaults: TriggerKPIs = {
+        total_triggers: 0, successful_triggers: 0, failed_triggers: 0,
+        success_rate: 0, avg_duration_sec: 0,
+        distinct_triggers: 0, distinct_target_types: 0,
+      };
+
+      return {
+        data: rows[0] || defaults,
+        meta: { from, to, generated_at: new Date().toISOString(), cached },
+      };
+    } catch (error) {
+      fastify.log.error(error);
+      reply.code(500);
+      throw new Error('Failed to fetch trigger KPIs');
+    }
+  });
+
 }

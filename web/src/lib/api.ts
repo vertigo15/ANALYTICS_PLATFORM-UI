@@ -48,6 +48,7 @@ export interface HealthResponse {
 
 export interface Organisation {
   organization_id: string;
+  organization_name: string;
 }
 
 export interface Agent {
@@ -276,6 +277,9 @@ export interface DocumentKPIs {
   success_rate: number;
   avg_chunks_per_doc: number;
   currently_failing: number;
+  avg_words_per_chunk: number;
+  docs_with_embeddings: number;
+  embedding_coverage: number;
 }
 
 export interface DocumentFunnel {
@@ -357,6 +361,16 @@ export interface FailureCorrelation {
 }
 
 // Platform Operations interfaces
+export interface TriggerKPIs {
+  total_triggers: number;
+  successful_triggers: number;
+  failed_triggers: number;
+  success_rate: number;
+  avg_duration_sec: number;
+  distinct_triggers: number;
+  distinct_target_types: number;
+}
+
 export interface OperationsKPIs {
   messages_last_hour: number;
   cost_last_hour: number;

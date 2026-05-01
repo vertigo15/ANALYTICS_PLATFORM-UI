@@ -118,17 +118,30 @@ export default async function documentsRoutes(fastify: FastifyInstance) {
             FROM gold.fact_document_processing
             WHERE status = 'FAILED'
               AND document_created_at >= $1 AND document_created_at <= $2
+          ),
+          rag_health AS (
+            SELECT
+              AVG(avg_words_per_chunk)::numeric              AS avg_words_per_chunk,
+              SUM(docs_with_embeddings)::integer             AS docs_with_embeddings,
+              AVG(embedding_coverage)::numeric               AS embedding_coverage
+            FROM gold.mart_document_rag_health
+            WHERE date_day >= $1::date AND date_day <= $2::date
           )
           SELECT
-            COALESCE(pd.total_docs, 0)::integer as total_documents,
-            CASE 
-              WHEN pd.total_docs > 0 THEN (pd.processed_docs::numeric / pd.total_docs::numeric * 100)
-              ELSE 0 
-            END::numeric as success_rate,
-            COALESCE(pd.avg_chunks, 0)::numeric as avg_chunks_per_doc,
-            COALESCE(cf.failing_count, 0)::integer as currently_failing
+            COALESCE(pd.total_docs, 0)::integer             AS total_documents,
+            CASE
+              WHEN pd.total_docs > 0
+              THEN (pd.processed_docs::numeric / pd.total_docs::numeric * 100)
+              ELSE 0
+            END::numeric                                     AS success_rate,
+            COALESCE(pd.avg_chunks, 0)::numeric             AS avg_chunks_per_doc,
+            COALESCE(cf.failing_count, 0)::integer          AS currently_failing,
+            COALESCE(rh.avg_words_per_chunk, 0)::numeric    AS avg_words_per_chunk,
+            COALESCE(rh.docs_with_embeddings, 0)::integer   AS docs_with_embeddings,
+            COALESCE(rh.embedding_coverage, 0)::numeric     AS embedding_coverage
           FROM period_docs pd
           CROSS JOIN currently_failing cf
+          CROSS JOIN rag_health rh
         `;
 
         const { rows, cached } = await queryWithCache<DocumentKPIs>(
@@ -145,6 +158,9 @@ export default async function documentsRoutes(fastify: FastifyInstance) {
               success_rate: 0,
               avg_chunks_per_doc: 0,
               currently_failing: 0,
+              avg_words_per_chunk: 0,
+              docs_with_embeddings: 0,
+              embedding_coverage: 0,
             },
             meta: {
               from,

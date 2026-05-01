@@ -7,6 +7,7 @@ import { formatCost, formatRelativeTime } from '@/lib/formatters';
 import { CHART_COLORS } from '@/lib/constants';
 import type {
   ApiResponse,
+  TriggerKPIs,
   OperationsKPIs,
   HealthIndicator,
   HourlyOperations,
@@ -58,10 +59,17 @@ export default function OperationsPage() {
     { refreshInterval: 300000 }
   );
 
+  const { data: triggersData, isLoading: triggersLoading } = useSWR<ApiResponse<TriggerKPIs>>(
+    `/operations/triggers?from=${new Date(Date.now()-30*86400000).toISOString().split('T')[0]}&to=${new Date().toISOString().split('T')[0]}&refresh=${refreshKey}`,
+    fetcher,
+    { refreshInterval: 300000 }
+  );
+
   const kpis = kpisData?.data;
   const healthIndicators = statusData?.data || [];
   const hourly = hourlyData?.data || [];
   const events = eventsData?.data || [];
+  const triggerKpis = triggersData?.data;
 
   // KPI cards
   const kpiCards = [
@@ -451,6 +459,45 @@ export default function OperationsPage() {
           isLoading={eventsLoading}
         />
       </div>
+      {/* Trigger / Notification KPIs */}
+      <div className="space-y-2">
+        <h2 className="text-lg font-bold text-text-primary">Trigger &amp; Notification Health</h2>
+        <p className="text-sm text-text-secondary">Last 30 days — automation trigger executions</p>
+      </div>
+      <KpiRow kpis={[
+        {
+          title: 'Triggers Fired',
+          value: triggerKpis?.total_triggers.toLocaleString() || '0',
+          isLoading: triggersLoading,
+          tooltip: 'Total trigger executions in the last 30 days.',
+        },
+        {
+          title: 'Trigger Success Rate',
+          value: triggerKpis ? `${Number(triggerKpis.success_rate).toFixed(1)}%` : '0%',
+          isLoading: triggersLoading,
+          tooltip: 'Percentage of trigger executions that completed with status = success.',
+        },
+        {
+          title: 'Failed Triggers',
+          value: triggerKpis?.failed_triggers.toString() || '0',
+          subtitle: triggerKpis && triggerKpis.failed_triggers > 0 ? 'Requires attention' : undefined,
+          isLoading: triggersLoading,
+          tooltip: 'Executions that ended with status = failed or has_error = true.',
+        },
+        {
+          title: 'Avg Exec Duration',
+          value: triggerKpis ? `${Number(triggerKpis.avg_duration_sec).toFixed(2)}s` : '0s',
+          isLoading: triggersLoading,
+          tooltip: 'Average execution duration in seconds across all trigger runs.',
+        },
+        {
+          title: 'Distinct Triggers',
+          value: triggerKpis?.distinct_triggers.toString() || '0',
+          isLoading: triggersLoading,
+          tooltip: 'Number of unique trigger definitions that fired in the last 30 days.',
+        },
+      ]} />
+
     </div>
   );
 }
