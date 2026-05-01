@@ -61,12 +61,12 @@ async function start() {
   const port = parseInt(process.env.API_PORT || '3001');
 
   await fastify.listen({ host, port });
-  fastify.log.info(\`API server listening on http://\${host}:\${port}\`);
+  fastify.log.info(`API server listening on http://${host}:${port}`);
 }
 
 // ── Graceful shutdown ─────────────────────────────────────────────────────────
 async function shutdown(signal: string) {
-  fastify.log.info(\`Received \${signal}, shutting down gracefully…\`);
+  fastify.log.info(`Received ${signal}, shutting down gracefully…`);
   await fastify.close();
   await pool.end();
   process.exit(0);
