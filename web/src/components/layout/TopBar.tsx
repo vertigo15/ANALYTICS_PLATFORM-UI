@@ -14,17 +14,28 @@ const PAGE_TITLES: Record<string, string> = {
   '/dashboard/operations': 'Platform Operations',
 };
 
+const ENV_BADGE: Record<string, { label: string; className: string }> = {
+  dev:  { label: 'DEV',  className: 'bg-blue-100 text-blue-700 border-blue-200' },
+  stg:  { label: 'STG',  className: 'bg-amber-100 text-amber-700 border-amber-200' },
+  prod: { label: 'PROD', className: 'bg-red-100 text-red-700 border-red-300 font-bold' },
+};
+
 export default function TopBar() {
   const pathname = usePathname();
   const { toggleAISidebar, isAISidebarOpen } = useAIStore();
 
   const pageTitle = PAGE_TITLES[pathname] || 'Dashboard';
+  const env = process.env.NEXT_PUBLIC_APP_ENV || 'dev';
+  const badge = ENV_BADGE[env] ?? { label: env.toUpperCase(), className: 'bg-slate-100 text-slate-600 border-slate-200' };
 
   return (
     <header className="bg-white border-b border-border">
       <div className="px-8 py-4 flex items-center justify-between">
-        <div>
+        <div className="flex items-center gap-3">
           <h2 className="text-2xl font-bold text-text-primary">{pageTitle}</h2>
+          <span className={`text-xs px-2 py-0.5 rounded-full border font-medium tracking-wide ${badge.className}`}>
+            {badge.label}
+          </span>
         </div>
         <div>
           <button
