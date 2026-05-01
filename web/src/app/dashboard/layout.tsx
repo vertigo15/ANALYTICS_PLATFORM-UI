@@ -29,7 +29,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <FreshnessBar />
         <main
           className="flex-1 overflow-y-auto transition-all duration-300"
-          style={{ marginRight: isAISidebarOpen ? \`\${sidebarWidth}px\` : '0' }}
+          style={{ marginRight: isAISidebarOpen ? `${sidebarWidth}px` : '0' }}
         >
           {children}
         </main>
