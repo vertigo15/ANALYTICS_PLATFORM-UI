@@ -12,12 +12,12 @@ import {
 } from 'lucide-react';
 
 const NAV_ITEMS = [
-  { href: '/dashboard/cost', label: 'Cost & Tokens', icon: DollarSign },
-  { href: '/dashboard/users', label: 'User Activity', icon: Users },
-  { href: '/dashboard/agents', label: 'Agent Performance', icon: Bot },
-  { href: '/dashboard/analytics', label: 'Agent Analytics', icon: BarChart3 },
-  { href: '/dashboard/documents', label: 'Document Health', icon: FileText },
-  { href: '/dashboard/operations', label: 'Platform Operations', icon: Activity },
+  { href: '/dashboard/cost',       label: 'Cost & Tokens',       icon: DollarSign },
+  { href: '/dashboard/users',      label: 'User Activity',        icon: Users,     badge: 'Sharing' },
+  { href: '/dashboard/agents',     label: 'Agent Performance',    icon: Bot,       badge: 'Latency' },
+  { href: '/dashboard/analytics',  label: 'Agent Analytics',      icon: BarChart3 },
+  { href: '/dashboard/documents',  label: 'Document Health',      icon: FileText },
+  { href: '/dashboard/operations', label: 'Platform Operations',  icon: Activity },
 ];
 
 export default function Sidebar() {
@@ -43,7 +43,16 @@ export default function Sidebar() {
               }`}
             >
               <Icon size={20} />
-              <span className="text-sm font-medium">{item.label}</span>
+              <span className="text-sm font-medium flex-1">{item.label}</span>
+              {item.badge && (
+                <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${
+                  isActive
+                    ? 'bg-white/20 text-white'
+                    : 'bg-slate-600 text-slate-300'
+                }`}>
+                  {item.badge}
+                </span>
+              )}
             </Link>
           );
         })}
