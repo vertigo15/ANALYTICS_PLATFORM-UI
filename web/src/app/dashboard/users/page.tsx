@@ -8,6 +8,7 @@ import { formatCost, formatTokens, formatDateShort, formatRelativeTime, formatNu
 import { CHART_COLORS } from '@/lib/constants';
 import type {
   ApiResponse,
+  SharingData,
   UserKPIs,
   DailyActivity,
   ActivityHeatmap,
@@ -53,6 +54,11 @@ export default function UsersPage() {
 
   const { data: userDetailData } = useSWR<ApiResponse<UserDetail>>(
     selectedUserId ? `/users/${selectedUserId}?${queryParams}` : null,
+    fetcher
+  );
+
+  const { data: sharingData, isLoading: sharingLoading } = useSWR<ApiResponse<SharingData>>(
+    `/users/sharing?${queryParams}`,
     fetcher
   );
 
@@ -840,6 +846,106 @@ export default function UsersPage() {
           </div>
         )}
       </SlideOver>
+      {/* ── Sharing & Collaboration ───────────────────────────────────────── */}
+      <div className="space-y-2 pt-4 border-t border-border">
+        <h2 className="text-lg font-bold text-text-primary">Sharing &amp; Collaboration</h2>
+        <p className="text-sm text-text-secondary">Active shares across agents, sources and skills</p>
+      </div>
+
+      {/* Sharing KPI cards */}
+      <KpiRow kpis={[
+        {
+          title: 'Active Agent Shares',
+          value: sharingData?.data?.kpis?.active_agent_shares?.toString() ?? '—',
+          isLoading: sharingLoading,
+          tooltip: 'Agents currently shared with at least one other user (view or edit).',
+        },
+        {
+          title: 'Active Source Shares',
+          value: sharingData?.data?.kpis?.active_source_shares?.toString() ?? '—',
+          isLoading: sharingLoading,
+          tooltip: 'Knowledge sources currently shared with other users.',
+        },
+        {
+          title: 'Active Skill Shares',
+          value: sharingData?.data?.kpis?.active_skill_shares?.toString() ?? '—',
+          isLoading: sharingLoading,
+          tooltip: 'Skills currently shared with other users.',
+        },
+        {
+          title: 'Total Active Shares',
+          value: sharingData?.data?.kpis?.total_active_shares?.toString() ?? '—',
+          subtitle: `${sharingData?.data?.kpis?.unique_sharers ?? 0} sharers · ${sharingData?.data?.kpis?.unique_recipients ?? 0} recipients`,
+          isLoading: sharingLoading,
+          tooltip: 'Total active share relationships across all resource types.',
+        },
+        {
+          title: 'Grants vs Revocations',
+          value: sharingData?.data?.kpis?.total_granted?.toString() ?? '—',
+          subtitle: `${sharingData?.data?.kpis?.total_revoked ?? 0} revoked`,
+          isLoading: sharingLoading,
+          tooltip: 'Total shares granted vs revoked in the selected period.',
+        },
+      ]} />
+
+      {/* Sharing trend chart */}
+      {sharingData?.data?.trend && sharingData.data.trend.length > 0 && (() => {
+        const trend = sharingData.data.trend;
+        const dates = [...new Set(trend.map(t => t.date_day))].sort();
+        const types = [...new Set(trend.map(t => t.feature_type))];
+        const colorMap: Record<string, string> = { agent: CHART_COLORS[0], source: CHART_COLORS[2], skill: CHART_COLORS[3] };
+
+        const sharingTrendOptions: import('echarts').EChartsOption = {
+          tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+          legend: { data: types.map(t => t.charAt(0).toUpperCase() + t.slice(1)), top: 0 },
+          grid: { left: '3%', right: '4%', bottom: '3%', top: '15%', containLabel: true },
+          xAxis: { type: 'category', data: dates },
+          yAxis: { type: 'value', minInterval: 1 },
+          series: types.map(type => ({
+            name: type.charAt(0).toUpperCase() + type.slice(1),
+            type: 'bar' as const,
+            stack: 'shares',
+            data: dates.map(d => {
+              const row = trend.find(t => t.date_day === d && t.feature_type === type);
+              return row?.active ?? 0;
+            }),
+            itemStyle: { color: colorMap[type] ?? CHART_COLORS[4] },
+          })),
+        };
+
+        return (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <ChartCard title="Active Shares Over Time" subtitle="Stacked by resource type" isLoading={sharingLoading}>
+              <BarChart options={sharingTrendOptions} height="260px" />
+            </ChartCard>
+
+            <ChartCard title="Grant vs Revoke Activity" subtitle="Net sharing momentum" isLoading={sharingLoading}>
+              <BarChart options={{
+                tooltip: { trigger: 'axis' },
+                legend: { data: ['Granted', 'Revoked'], top: 0 },
+                grid: { left: '3%', right: '4%', bottom: '3%', top: '15%', containLabel: true },
+                xAxis: { type: 'category', data: dates },
+                yAxis: { type: 'value', minInterval: 1 },
+                series: [
+                  {
+                    name: 'Granted',
+                    type: 'bar' as const,
+                    data: dates.map(d => trend.filter(t => t.date_day === d).reduce((s, t) => s + (t.granted ?? 0), 0)),
+                    itemStyle: { color: CHART_COLORS[2] },
+                  },
+                  {
+                    name: 'Revoked',
+                    type: 'bar' as const,
+                    data: dates.map(d => trend.filter(t => t.date_day === d).reduce((s, t) => s + (t.revoked ?? 0), 0)),
+                    itemStyle: { color: CHART_COLORS[4] },
+                  },
+                ],
+              }} height="260px" />
+            </ChartCard>
+          </div>
+        );
+      })()}
+
     </div>
   );
 }

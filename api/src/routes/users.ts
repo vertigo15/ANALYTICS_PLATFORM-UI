@@ -666,4 +666,55 @@ export default async function usersRoutes(fastify: FastifyInstance) {
       throw new Error('Failed to fetch user detail');
     }
   });
+  // GET /api/v1/users/sharing — sharing activity KPIs + trend
+  fastify.get<{ Querystring: QueryParams }>('/sharing', async (request, reply) => {
+    const { from, to } = request.query;
+    if (!from || !to) { reply.code(400); throw new Error('from and to required'); }
+
+    const cacheTTL = 3300;
+    try {
+      const [kpiRes, trendRes] = await Promise.all([
+        queryWithCache(
+          `sharing:kpis:${from}:${to}`, cacheTTL,
+          `SELECT
+            COALESCE(SUM(CASE WHEN feature_type='agent'  THEN active_shares ELSE 0 END),0)::int  AS active_agent_shares,
+            COALESCE(SUM(CASE WHEN feature_type='source' THEN active_shares ELSE 0 END),0)::int  AS active_source_shares,
+            COALESCE(SUM(CASE WHEN feature_type='skill'  THEN active_shares ELSE 0 END),0)::int  AS active_skill_shares,
+            COALESCE(SUM(active_shares),0)::int    AS total_active_shares,
+            COALESCE(SUM(shares_granted),0)::int   AS total_granted,
+            COALESCE(SUM(shares_revoked),0)::int   AS total_revoked,
+            COALESCE(MAX(unique_granters),0)::int  AS unique_sharers,
+            COALESCE(MAX(unique_recipients),0)::int AS unique_recipients
+           FROM gold.mart_sharing_activity_daily
+           WHERE date_day >= $1 AND date_day <= $2`,
+          [from, to]
+        ),
+        queryWithCache(
+          `sharing:trend:${from}:${to}`, cacheTTL,
+          `SELECT date_day::text, feature_type,
+            SUM(shares_granted)::int  AS granted,
+            SUM(shares_revoked)::int  AS revoked,
+            SUM(active_shares)::int   AS active
+           FROM gold.mart_sharing_activity_daily
+           WHERE date_day >= $1 AND date_day <= $2
+           GROUP BY date_day, feature_type
+           ORDER BY date_day`,
+          [from, to]
+        ),
+      ]);
+
+      return {
+        data: { kpis: kpiRes.rows[0] ?? {}, trend: trendRes.rows },
+        meta: { from, to, generated_at: new Date().toISOString(), cached: kpiRes.cached },
+      };
+    } catch (error: any) {
+      if (error?.code === '42P01') {
+        return { data: { kpis: {}, trend: [] }, meta: { from, to, generated_at: new Date().toISOString(), cached: false } };
+      }
+      fastify.log.error(error);
+      reply.code(500);
+      throw new Error('Failed to fetch sharing data');
+    }
+  });
+
 }

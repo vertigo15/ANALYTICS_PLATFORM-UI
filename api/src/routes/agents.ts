@@ -38,6 +38,14 @@ interface AgentPerformance {
   reactions_negative: number;
 }
 
+interface AgentLatencyKPIs {
+  avg_latency_sec: number;
+  p95_latency_sec: number;
+  avg_ttft_ms: number | null;
+  avg_tokens_per_sec: number | null;
+  agents_with_latency: number;
+}
+
 interface AgentKPIs {
   active_agents: number;
   total_agent_cost: number;
@@ -454,4 +462,44 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
       throw new Error('Failed to fetch agent detail');
     }
   });
+  // GET /api/v1/agents/latency — response time KPIs from mart_agent_performance_daily
+  fastify.get<{ Querystring: QueryParams }>('/latency', async (request, reply) => {
+    const { from, to } = request.query;
+    if (!from || !to) { reply.code(400); throw new Error('from and to required'); }
+
+    const cacheKey = `agents:latency:${from}:${to}`;
+    const cacheTTL = 3300;
+    try {
+      const { rows, cached } = await queryWithCache<AgentLatencyKPIs>(
+        cacheKey, cacheTTL,
+        `SELECT
+          ROUND(AVG(avg_response_latency_seconds)::numeric, 2)::float    AS avg_latency_sec,
+          ROUND(
+            PERCENTILE_CONT(0.95) WITHIN GROUP
+              (ORDER BY p95_response_latency_seconds)::numeric, 2
+          )::float                                                        AS p95_latency_sec,
+          ROUND(AVG(avg_ttft_ms)::numeric, 0)::float                     AS avg_ttft_ms,
+          ROUND(AVG(avg_output_tokens_per_second)::numeric, 2)::float    AS avg_tokens_per_sec,
+          COUNT(DISTINCT agent_id)::int                                  AS agents_with_latency
+         FROM gold.mart_agent_performance_daily
+         WHERE date_day >= $1 AND date_day <= $2
+           AND avg_response_latency_seconds IS NOT NULL`,
+        [from, to]
+      );
+
+      const defaults: AgentLatencyKPIs = {
+        avg_latency_sec: 0, p95_latency_sec: 0,
+        avg_ttft_ms: null, avg_tokens_per_sec: null, agents_with_latency: 0,
+      };
+      return {
+        data: rows[0] ?? defaults,
+        meta: { from, to, generated_at: new Date().toISOString(), cached },
+      };
+    } catch (error) {
+      fastify.log.error(error);
+      reply.code(500);
+      throw new Error('Failed to fetch agent latency');
+    }
+  });
+
 }

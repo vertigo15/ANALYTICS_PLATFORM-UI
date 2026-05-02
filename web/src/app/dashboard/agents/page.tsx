@@ -9,6 +9,7 @@ import { CHART_COLORS } from '@/lib/constants';
 import type {
   ApiResponse,
   AgentKPIs,
+  AgentLatencyKPIs,
   AgentSummary,
   AgentPerformance,
   AgentDetail,
@@ -49,12 +50,18 @@ export default function AgentsPage() {
     fetcher
   );
 
+  const { data: latencyData, isLoading: latencyLoading } = useSWR<ApiResponse<AgentLatencyKPIs>>(
+    `/agents/latency?${queryParams}`,
+    fetcher
+  );
+
   const { data: agentDetailData } = useSWR<ApiResponse<AgentDetail>>(
     selectedAgentId ? `/agents/${selectedAgentId}?${queryParams}` : null,
     fetcher
   );
 
   const kpis = kpisData?.data;
+  const latency = latencyData?.data;
   const agents = summaryData?.data || [];
   const performance = performanceData?.data || [];
   const agentDetail = agentDetailData?.data;
@@ -90,6 +97,20 @@ export default function AgentsPage() {
       value: Math.round(kpis?.avg_messages_per_agent || 0).toLocaleString(),
       isLoading: kpisLoading,
       tooltip: 'Average number of messages per active agent in the selected period',
+    },
+    {
+      title: 'Avg Response Time',
+      value: latency?.avg_latency_sec ? `${latency.avg_latency_sec}s` : '—',
+      subtitle: latency?.agents_with_latency ? `${latency.agents_with_latency} agents measured` : undefined,
+      isLoading: latencyLoading,
+      tooltip: 'Average end-to-end response latency across all agents with measured data.',
+    },
+    {
+      title: 'P95 Response Time',
+      value: latency?.p95_latency_sec ? `${latency.p95_latency_sec}s` : '—',
+      subtitle: 'Slowest 5% of responses',
+      isLoading: latencyLoading,
+      tooltip: '95th percentile response latency — the threshold below which 95% of responses fall.',
     },
   ];
 

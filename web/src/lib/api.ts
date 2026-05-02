@@ -167,6 +167,39 @@ export interface AgentPerformance {
   reactions_negative: number;
 }
 
+
+export interface AgentLatencyKPIs {
+  avg_latency_sec: number;
+  p95_latency_sec: number;
+  avg_ttft_ms: number | null;
+  avg_tokens_per_sec: number | null;
+  agents_with_latency: number;
+}
+
+export interface SharingKPIs {
+  active_agent_shares: number;
+  active_source_shares: number;
+  active_skill_shares: number;
+  total_active_shares: number;
+  total_granted: number;
+  total_revoked: number;
+  unique_sharers: number;
+  unique_recipients: number;
+}
+
+export interface SharingTrend {
+  date_day: string;
+  feature_type: string;
+  granted: number;
+  revoked: number;
+  active: number;
+}
+
+export interface SharingData {
+  kpis: SharingKPIs;
+  trend: SharingTrend[];
+}
+
 export interface AgentKPIs {
   active_agents: number;
   total_agent_cost: number;
