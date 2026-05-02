@@ -186,7 +186,7 @@ export default async function analyticsRoutes(fastify: FastifyInstance) {
     Reply: ApiResponse<ConversationListResponse>;
   }>('/conversations', async (request, reply) => {
     const userJoinCol = await getUserJoinCol();
-    const { from, to } = request.query;
+    const { from, to, organization_id } = request.query;
     const page = Math.max(1, parseInt(request.query.page || '1'));
     const pageSize = Math.min(100, Math.max(1, parseInt(request.query.pageSize || '25')));
     const offset = (page - 1) * pageSize;
@@ -196,10 +196,20 @@ export default async function analyticsRoutes(fastify: FastifyInstance) {
       throw new Error('from and to query parameters are required');
     }
 
-    const cacheKey = `analytics:conversations:${from}:${to}:${page}:${pageSize}`;
+    const cacheKey = `analytics:conversations:${from}:${to}:${page}:${pageSize}:${organization_id || 'all'}`;
     const cacheTTL = 3300;
 
     try {
+      let orgFilter = '';
+      const baseParams: (string | number | null)[] = [from, to];
+      if (organization_id) {
+        orgFilter = `AND m.${userJoinCol} IN (SELECT ${userJoinCol} FROM gold.dim_users WHERE organization_id = $${baseParams.length + 1})`;
+        baseParams.push(organization_id);
+      }
+      const paginationOffset = baseParams.length;
+      const dataParams = [...baseParams, pageSize, offset];
+      const countParams = [...baseParams];
+
       const sql = `
         WITH conv AS (
           SELECT
@@ -216,6 +226,7 @@ export default async function analyticsRoutes(fastify: FastifyInstance) {
           LEFT JOIN gold.dim_users du ON m.${userJoinCol} = du.${userJoinCol}
           WHERE m.message_created_at >= $1::timestamp
             AND m.message_created_at <= ($2::date + INTERVAL '1 day')
+            ${orgFilter}
           GROUP BY m.conversation_id
           HAVING COUNT(*) >= 2
         )
@@ -236,23 +247,24 @@ export default async function analyticsRoutes(fastify: FastifyInstance) {
         FROM conv c
         LEFT JOIN silver.conversations sc ON sc.conversation_id = c.conversation_id
         ORDER BY c.date DESC
-        LIMIT $3 OFFSET $4
+        LIMIT $${paginationOffset + 1} OFFSET $${paginationOffset + 2}
       `;
 
       const countSql = `
         SELECT COUNT(*)::int AS total FROM (
-          SELECT conversation_id
-          FROM gold.fact_messages
-          WHERE message_created_at >= $1::timestamp
-            AND message_created_at <= ($2::date + INTERVAL '1 day')
-          GROUP BY conversation_id
+          SELECT m.conversation_id
+          FROM gold.fact_messages m
+          WHERE m.message_created_at >= $1::timestamp
+            AND m.message_created_at <= ($2::date + INTERVAL '1 day')
+            ${orgFilter}
+          GROUP BY m.conversation_id
           HAVING COUNT(*) >= 2
         ) sub
       `;
 
       const [dataResult, countResult] = await Promise.all([
-        queryWithCache<ConversationRow>(cacheKey, cacheTTL, sql, [from, to, pageSize, offset]),
-        queryWithCache<{ total: number }>(cacheKey + ':count', cacheTTL, countSql, [from, to]),
+        queryWithCache<ConversationRow>(cacheKey, cacheTTL, sql, dataParams),
+        queryWithCache<{ total: number }>(cacheKey + ':count', cacheTTL, countSql, countParams),
       ]);
 
       return {

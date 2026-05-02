@@ -96,9 +96,9 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
 
   // GET /api/v1/agents/summary?from=&to= (optional date filter)
   fastify.get<{ Querystring: QueryParams; Reply: ApiResponse<AgentSummary[]> }>('/summary', async (request, reply) => {
-    const { from, to } = request.query;
+    const { from, to, organization_id } = request.query;
     const cacheTTL = 3300;
-    const cacheKey = `agents:summary:${from || 'all'}:${to || 'all'}`;
+    const cacheKey = `agents:summary:${from || 'all'}:${to || 'all'}:${organization_id || 'all'}`;
 
     try {
       let sql: string;
@@ -106,6 +106,12 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
 
       if (from && to) {
         // Date-filtered summary derived from mart_llm_cost_by_user_model_day
+        params = [from, to];
+        let orgFilter = '';
+        if (organization_id) {
+          orgFilter = `AND c.user_id IN (SELECT user_id FROM gold.dim_users WHERE organization_id = $3)`;
+          params.push(organization_id);
+        }
         sql = `
           WITH filtered AS (
             SELECT
@@ -117,7 +123,7 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
               COUNT(DISTINCT c.user_id) as total_unique_users
             FROM gold.mart_llm_cost_by_user_model_day c
             WHERE c.agent_id IS NOT NULL
-              AND c.date_day >= $1 AND c.date_day <= $2
+              AND c.date_day >= $1 AND c.date_day <= $2 ${orgFilter}
             GROUP BY c.agent_id, c.agent_name
           )
           SELECT
@@ -138,7 +144,6 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
           FROM filtered f
           LEFT JOIN gold.dim_agents a ON f.agent_id = a.agent_id
           ORDER BY f.total_messages DESC`;
-        params = [from, to];
       } else {
         // Full summary from mart_agent_summary
         sql = `
@@ -194,14 +199,14 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
   fastify.get<{ Querystring: QueryParams; Reply: ApiResponse<AgentPerformance[]> }>(
     '/performance',
     async (request, reply) => {
-      const { from, to, agent_id } = request.query;
+      const { from, to, agent_id, organization_id } = request.query;
 
       if (!from || !to) {
         reply.code(400);
         throw new Error('from and to query parameters are required');
       }
 
-      const cacheKey = `agents:performance:${from}:${to}:${agent_id || 'all'}`;
+      const cacheKey = `agents:performance:${from}:${to}:${agent_id || 'all'}:${organization_id || 'all'}`;
       const cacheTTL = 3300;
 
       try {
@@ -227,6 +232,11 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
         if (agent_id) {
           sql += ` AND agent_id = $${params.length + 1}`;
           params.push(agent_id);
+        }
+
+        if (organization_id) {
+          sql += ` AND user_id IN (SELECT user_id FROM gold.dim_users WHERE organization_id = $${params.length + 1})`;
+          params.push(organization_id);
         }
 
         sql += ` GROUP BY date_day, agent_id, agent_name ORDER BY date_day, agent_name`;
@@ -259,17 +269,24 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
   fastify.get<{ Querystring: QueryParams; Reply: ApiResponse<AgentKPIs> }>(
     '/kpis',
     async (request, reply) => {
-      const { from, to } = request.query;
+      const { from, to, organization_id } = request.query;
 
       if (!from || !to) {
         reply.code(400);
         throw new Error('from and to query parameters are required');
       }
 
-      const cacheKey = `agents:kpis:${from}:${to}`;
+      const cacheKey = `agents:kpis:${from}:${to}:${organization_id || 'all'}`;
       const cacheTTL = 3300;
 
       try {
+        const kpiParams: (string | null)[] = [from, to];
+        let orgFilter = '';
+        if (organization_id) {
+          orgFilter = `AND user_id IN (SELECT user_id FROM gold.dim_users WHERE organization_id = $3)`;
+          kpiParams.push(organization_id);
+        }
+
         // Derive KPIs from mart_llm_cost_by_user_model_day (date-filtered)
         const sql = `
           WITH daily AS (
@@ -282,7 +299,7 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
               COUNT(DISTINCT user_id) as day_unique_users
             FROM gold.mart_llm_cost_by_user_model_day
             WHERE agent_id IS NOT NULL
-              AND date_day >= $1 AND date_day <= $2
+              AND date_day >= $1 AND date_day <= $2 ${orgFilter}
             GROUP BY date_day, agent_id
           ),
           daily_users AS (
@@ -307,7 +324,7 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
           cacheKey,
           cacheTTL,
           sql,
-          [from, to]
+          kpiParams
         );
 
         const defaultKpis: AgentKPIs = {

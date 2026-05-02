@@ -21,6 +21,16 @@ export class ApiError extends Error {
   }
 }
 
+// Mirror the env header injection from api.ts so SWR requests also carry the
+// correct environment.
+apiClient.interceptors.request.use((config) => {
+  if (typeof window !== 'undefined') {
+    const env = localStorage.getItem('analytics-env') || 'dev';
+    config.headers['x-analytics-env'] = env;
+  }
+  return config;
+});
+
 export async function fetcher<T = unknown>(url: string): Promise<T> {
   try {
     const response = await apiClient.get<T>(url);

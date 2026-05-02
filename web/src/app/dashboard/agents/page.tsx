@@ -27,12 +27,16 @@ type UsageMetric = 'messages' | 'tokens' | 'cost' | 'unique_users';
 type ActivityMetric = 'messages' | 'tokens' | 'cost' | 'unique_users';
 
 export default function AgentsPage() {
-  const { from, to } = useFiltersStore();
+  const { from, to, organizationId } = useFiltersStore();
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [usageMetric, setUsageMetric] = useState<UsageMetric>('messages');
   const [activityMetric, setActivityMetric] = useState<ActivityMetric>('messages');
 
-  const queryParams = new URLSearchParams({ from, to }).toString();
+  const queryParams = new URLSearchParams({
+    from,
+    to,
+    ...(organizationId ? { organization_id: organizationId } : {}),
+  }).toString();
 
   // Fetch data
   const { data: kpisData, isLoading: kpisLoading } = useSWR<ApiResponse<AgentKPIs>>(

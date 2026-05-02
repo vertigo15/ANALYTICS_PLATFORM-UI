@@ -25,11 +25,15 @@ import SlideOver from '@/components/dashboard/SlideOver';
 import type { EChartsOption } from 'echarts';
 
 export default function UsersPage() {
-  const { from, to } = useFiltersStore();
+  const { from, to, organizationId } = useFiltersStore();
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [lastLoginFilter, setLastLoginFilter] = useState<string>('all');
 
-  const queryParams = new URLSearchParams({ from, to }).toString();
+  const queryParams = new URLSearchParams({
+    from,
+    to,
+    ...(organizationId ? { organization_id: organizationId } : {}),
+  }).toString();
 
   // Fetch data
   const { data: kpisData, isLoading: kpisLoading } = useSWR<ApiResponse<UserKPIs>>(

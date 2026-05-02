@@ -341,16 +341,23 @@ export default async function usersRoutes(fastify: FastifyInstance) {
   fastify.get<{ Querystring: QueryParams; Reply: ApiResponse<DailyActivity[]> }>(
     '/activity-daily',
     async (request, reply) => {
-      const { from, to } = request.query;
+      const { from, to, organization_id } = request.query;
 
       if (!from || !to) {
         reply.code(400);
         throw new Error('from and to query parameters are required');
       }
 
-      const cacheKey = `users:activity-daily:${from}:${to}`;
+      const cacheKey = `users:activity-daily:${from}:${to}:${organization_id || 'all'}`;
 
       try {
+        const params: (string | null)[] = [from, to];
+        let orgFilter = '';
+        if (organization_id) {
+          orgFilter = `AND user_id IN (SELECT user_id FROM gold.dim_users WHERE organization_id = $3)`;
+          params.push(organization_id);
+        }
+
         const sql = `
           SELECT
             date_day::text as date_day,
@@ -363,7 +370,7 @@ export default async function usersRoutes(fastify: FastifyInstance) {
             SUM(total_tokens) as total_tokens,
             SUM(est_cost_usd) as est_cost_usd
           FROM gold.mart_llm_cost_by_user_model_day
-          WHERE date_day >= $1 AND date_day <= $2
+          WHERE date_day >= $1 AND date_day <= $2 ${orgFilter}
           GROUP BY date_day
           ORDER BY date_day
         `;
@@ -372,7 +379,7 @@ export default async function usersRoutes(fastify: FastifyInstance) {
           cacheKey,
           cacheTTL,
           sql,
-          [from, to]
+          params
         );
 
         return {
@@ -396,16 +403,23 @@ export default async function usersRoutes(fastify: FastifyInstance) {
   fastify.get<{ Querystring: QueryParams; Reply: ApiResponse<ActivityHeatmap[]> }>(
     '/activity-heatmap',
     async (request, reply) => {
-      const { from, to } = request.query;
+      const { from, to, organization_id } = request.query;
 
       if (!from || !to) {
         reply.code(400);
         throw new Error('from and to query parameters are required');
       }
 
-      const cacheKey = `users:activity-heatmap:${from}:${to}`;
+      const cacheKey = `users:activity-heatmap:${from}:${to}:${organization_id || 'all'}`;
 
       try {
+        const params: (string | null)[] = [from, to];
+        let orgFilter = '';
+        if (organization_id) {
+          orgFilter = `AND user_id IN (SELECT user_id FROM gold.dim_users WHERE organization_id = $3)`;
+          params.push(organization_id);
+        }
+
         const sql = `
           WITH daily_totals AS (
             SELECT
@@ -413,7 +427,7 @@ export default async function usersRoutes(fastify: FastifyInstance) {
               SUM(total_requests) as total_messages,
               COUNT(DISTINCT user_id) as total_users
             FROM gold.mart_llm_cost_by_user_model_day
-            WHERE date_day >= $1 AND date_day <= $2
+            WHERE date_day >= $1 AND date_day <= $2 ${orgFilter}
             GROUP BY day_of_week
           ),
           hours AS (
@@ -433,7 +447,7 @@ export default async function usersRoutes(fastify: FastifyInstance) {
           cacheKey,
           cacheTTL,
           sql,
-          [from, to]
+          params
         );
 
         return {
@@ -457,11 +471,19 @@ export default async function usersRoutes(fastify: FastifyInstance) {
   fastify.get<{ Querystring: QueryParams; Reply: ApiResponse<UserSummary[]> }>(
     '/summary',
     async (request, reply) => {
-      const { from, to } = request.query;
+      const { from, to, organization_id } = request.query;
       const hasDateFilter = from && to;
-      const cacheKey = hasDateFilter ? `users:summary:${from}:${to}` : 'users:summary';
+      const cacheKey = hasDateFilter
+        ? `users:summary:${from}:${to}:${organization_id || 'all'}`
+        : `users:summary:${organization_id || 'all'}`;
 
       try {
+        // Build org filter — always applied to dim_users directly since the query already joins it
+        const orgWhere = organization_id ? `AND u.organization_id = $${hasDateFilter ? 3 : 1}` : '';
+        const params: (string | null)[] = hasDateFilter
+          ? ([from, to, ...(organization_id ? [organization_id] : [])] as string[])
+          : (organization_id ? [organization_id] : []);
+
         const sql = hasDateFilter
           ? `
           SELECT
@@ -483,6 +505,7 @@ export default async function usersRoutes(fastify: FastifyInstance) {
             FROM gold.mart_llm_cost_by_user_model_day
             WHERE user_id = u.user_id
           ) all_activity ON true
+          WHERE 1=1 ${orgWhere}
           GROUP BY u.user_id, u.email, u.organization_id, u.account_created_at, u.is_deleted
           ORDER BY cost DESC
         `
@@ -500,6 +523,7 @@ export default async function usersRoutes(fastify: FastifyInstance) {
             u.is_deleted
           FROM gold.dim_users u
           LEFT JOIN gold.mart_llm_cost_by_user_model_day c ON u.user_id = c.user_id
+          WHERE 1=1 ${orgWhere}
           GROUP BY u.user_id, u.email, u.organization_id, u.account_created_at, u.is_deleted
           ORDER BY cost DESC
         `;
@@ -508,7 +532,7 @@ export default async function usersRoutes(fastify: FastifyInstance) {
           cacheKey,
           cacheTTL,
           sql,
-          hasDateFilter ? [from, to] : []
+          params
         );
 
         return {

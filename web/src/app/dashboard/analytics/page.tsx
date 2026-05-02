@@ -48,8 +48,12 @@ function formatDuration(seconds: number): string {
 
 export default function AnalyticsPage() {
   const router = useRouter();
-  const { from, to } = useFiltersStore();
-  const queryParams = new URLSearchParams({ from, to }).toString();
+  const { from, to, organizationId } = useFiltersStore();
+  const queryParams = new URLSearchParams({
+    from,
+    to,
+    ...(organizationId ? { organization_id: organizationId } : {}),
+  }).toString();
 
   // Fetch data
   const { data: kpisData, isLoading: kpisLoading } = useSWR<ApiResponse<AnalyticsKPIs>>(

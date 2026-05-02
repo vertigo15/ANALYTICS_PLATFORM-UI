@@ -24,7 +24,7 @@ export default function FilterBar() {
 
   // Fetch organisations
   const { data: orgsData } = useSWR<ApiResponse<Organisation[]>>(
-    '/users/organisations',
+    '/organisations',
     fetcher
   );
 
