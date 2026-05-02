@@ -55,7 +55,8 @@ pull_dev() {
   port=$(k8s_configmap_get "$ctx" "$ns" "$cm" "PG_PORT")
   name=$(k8s_configmap_get "$ctx" "$ns" "$cm" "PG_NAME")
   user=$(k8s_configmap_get "$ctx" "$ns" "$cm" "PG_USER")
-  pass=$(kv_get "$kv" "PG-PASSWORD")
+  # Password lives in the K8s secret, not in the Key Vault
+  pass=$(k8s_secret_get "$ctx" "$ns" "dev-base-ms-analytics-base-ms-secret" "PG_PASSWORD")
 
   if [ -n "$host" ]; then
     set_env "DEV" "DB_HOST" "$host"
