@@ -50,4 +50,27 @@ export async function queryWithCache<T extends QueryResultRow = QueryResultRow>(
   return { rows: result.rows, cached: false };
 }
 
+
+// ── Schema detection (runs once, cached) ─────────────────────────────────────
+// fact_messages uses 'user_id' in dev/prod, 'user_key' in staging
+let _userJoinCol: string | null = null;
+
+export async function getUserJoinCol(): Promise<string> {
+  if (_userJoinCol) return _userJoinCol;
+  try {
+    const result = await query(`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'gold'
+        AND table_name   = 'fact_messages'
+        AND column_name IN ('user_id', 'user_key')
+      ORDER BY ordinal_position LIMIT 1
+    `);
+    _userJoinCol = result.rows[0]?.column_name || 'user_id';
+  } catch {
+    _userJoinCol = 'user_id';
+  }
+  return _userJoinCol;
+}
+
 export default pool;

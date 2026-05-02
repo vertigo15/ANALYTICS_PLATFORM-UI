@@ -1,5 +1,5 @@
 import { FastifyInstance } from 'fastify';
-import { queryWithCache } from '../db';
+import { queryWithCache, getUserJoinCol } from '../db';
 import { ApiResponse, QueryParams } from '../types';
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -185,6 +185,7 @@ export default async function analyticsRoutes(fastify: FastifyInstance) {
     Querystring: QueryParams & { page?: string; pageSize?: string };
     Reply: ApiResponse<ConversationListResponse>;
   }>('/conversations', async (request, reply) => {
+    const userJoinCol = await getUserJoinCol();
     const { from, to } = request.query;
     const page = Math.max(1, parseInt(request.query.page || '1'));
     const pageSize = Math.min(100, Math.max(1, parseInt(request.query.pageSize || '25')));
@@ -212,7 +213,7 @@ export default async function analyticsRoutes(fastify: FastifyInstance) {
             SUM(CASE WHEN m.reaction_type = 'like' THEN 1 ELSE 0 END)::int AS likes,
             SUM(CASE WHEN m.reaction_type = 'dislike' THEN 1 ELSE 0 END)::int AS dislikes
           FROM gold.fact_messages m
-          LEFT JOIN gold.dim_users du ON m.user_id = du.user_id
+          LEFT JOIN gold.dim_users du ON m.${userJoinCol} = du.${userJoinCol}
           WHERE m.message_created_at >= $1::timestamp
             AND m.message_created_at <= ($2::date + INTERVAL '1 day')
           GROUP BY m.conversation_id
@@ -459,7 +460,7 @@ export default async function analyticsRoutes(fastify: FastifyInstance) {
             LAG(m.message_created_at) OVER (ORDER BY m.message_created_at) AS prev_ts,
             m.message_created_at AS raw_ts
           FROM gold.fact_messages m
-          LEFT JOIN gold.dim_users du ON m.user_id = du.user_id
+          LEFT JOIN gold.dim_users du ON m.${userJoinCol} = du.${userJoinCol}
           WHERE m.conversation_id = $1
         ),
         content_agg AS (

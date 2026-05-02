@@ -411,7 +411,15 @@ export default async function operationsRoutes(fastify: FastifyInstance) {
         data: rows[0] || defaults,
         meta: { from, to, generated_at: new Date().toISOString(), cached },
       };
-    } catch (error) {
+    } catch (error: any) {
+      // Table may not exist in all environments (e.g. staging)
+      if (error?.code === '42P01') {
+        return {
+          data: { total_triggers: 0, successful_triggers: 0, failed_triggers: 0,
+                  success_rate: 0, avg_duration_sec: 0, distinct_triggers: 0, distinct_target_types: 0 },
+          meta: { from, to, generated_at: new Date().toISOString(), cached: false },
+        };
+      }
       fastify.log.error(error);
       reply.code(500);
       throw new Error('Failed to fetch trigger KPIs');
