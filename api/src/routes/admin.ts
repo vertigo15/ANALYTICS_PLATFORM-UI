@@ -1,25 +1,18 @@
 import { FastifyInstance } from 'fastify';
-import { switchEnv, getCurrentEnv } from '../db';
+import { getCurrentEnv, getDbHost } from '../db';
 
 export default async function adminRoutes(fastify: FastifyInstance) {
-  fastify.post<{ Body: { env: string } }>('/switch-env', async (request, reply) => {
+  // Env is now controlled per-request via the x-analytics-env header.
+  // The frontend stores the preference in localStorage and sends it with every request.
+  fastify.post<{ Body: { env: string } }>('/switch-env', async (request) => {
     const { env } = request.body ?? {};
-    if (!env || !['dev', 'stg', 'prod'].includes(env)) {
-      reply.code(400);
-      throw new Error('env must be dev | stg | prod');
-    }
-    try {
-      const db_host = await switchEnv(env);
-      fastify.log.info(`Switched to ${env} (${db_host})`);
-      return { success: true, env, db_host };
-    } catch (error) {
-      fastify.log.error(error);
-      reply.code(500);
-      throw new Error('Failed to switch environment');
-    }
+    // Acknowledge the switch — actual routing is handled per-request via header.
+    const safeEnv = ['dev', 'stg', 'prod'].includes(env) ? env : getCurrentEnv();
+    return { success: true, env: safeEnv, db_host: getDbHost(safeEnv) };
   });
 
   fastify.get('/current-env', async () => ({
     env: getCurrentEnv(),
+    db_host: getDbHost(),
   }));
 }

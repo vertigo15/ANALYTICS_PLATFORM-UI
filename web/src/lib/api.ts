@@ -10,6 +10,18 @@ const apiClient = axios.create({
   },
 });
 
+// Inject the active environment as a header on every request.
+// The backend uses AsyncLocalStorage to propagate this through the full
+// async call stack, so every DB query uses the right pool — stateless,
+// replica-safe, no restart needed.
+apiClient.interceptors.request.use((config) => {
+  if (typeof window !== 'undefined') {
+    const env = localStorage.getItem('analytics-env') || 'dev';
+    config.headers['x-analytics-env'] = env;
+  }
+  return config;
+});
+
 export interface ApiResponse<T> {
   data: T;
   meta: {
@@ -541,7 +553,7 @@ export async function getHealth(): Promise<HealthResponse> {
 }
 
 export async function getOrganisations(): Promise<ApiResponse<Organisation[]>> {
-  return apiFetch<ApiResponse<Organisation[]>>('/users/organisations');
+  return apiFetch<ApiResponse<Organisation[]>>('/organisations');
 }
 
 export async function getAgentsList(): Promise<ApiResponse<Agent[]>> {

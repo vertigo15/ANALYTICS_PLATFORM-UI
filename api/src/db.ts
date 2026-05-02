@@ -1,10 +1,28 @@
 import { Pool, QueryResult, QueryResultRow } from 'pg';
 import NodeCache from 'node-cache';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
-// ── Dynamic env state ─────────────────────────────────────────────────────────
-let _currentEnv = (process.env.APP_ENV || 'dev').toLowerCase();
-let _userJoinCol: string | null = null;
+const VALID_ENVS = ['dev', 'stg', 'prod'] as const;
+type Env = typeof VALID_ENVS[number];
 
+const DEFAULT_ENV = (process.env.APP_ENV || 'dev').toLowerCase() as Env;
+
+// ── Per-request env context ───────────────────────────────────────────────────
+const envStorage = new AsyncLocalStorage<Env>();
+
+export function getCurrentEnv(): Env {
+  return envStorage.getStore() ?? DEFAULT_ENV;
+}
+
+/** Call done() (or any sync fn) inside the given env's async context. */
+export function runWithEnv(env: string, fn: () => void): void {
+  const safeEnv: Env = (VALID_ENVS as readonly string[]).includes(env)
+    ? (env as Env)
+    : DEFAULT_ENV;
+  envStorage.run(safeEnv, fn);
+}
+
+// ── One pool per environment, initialised at startup ─────────────────────────
 function buildPool(envKey: string): Pool {
   const p = envKey.toUpperCase();
   const pool = new Pool({
@@ -24,34 +42,27 @@ function buildPool(envKey: string): Pool {
   return pool;
 }
 
-let _pool = buildPool(_currentEnv);
+const pools: Record<Env, Pool> = {
+  dev:  buildPool('dev'),
+  stg:  buildPool('stg'),
+  prod: buildPool('prod'),
+};
+
 const cache = new NodeCache();
 
-// ── Switch DB at runtime (no restart needed) ──────────────────────────────────
-export async function switchEnv(newEnv: string): Promise<string> {
-  const valid = ['dev', 'stg', 'prod'];
-  if (!valid.includes(newEnv)) throw new Error(`Invalid env: ${newEnv}`);
+// Per-env schema detection cache
+const _userJoinColCache: Partial<Record<Env, string>> = {};
 
-  const old = _pool;
-  _pool = buildPool(newEnv);
-  _currentEnv = newEnv;
-  _userJoinCol = null;       // re-detect schema for new DB
-  cache.flushAll();           // clear cached query results
-
-  // drain old pool gracefully
-  setTimeout(() => old.end().catch(() => {}), 5000);
-
-  const p = newEnv.toUpperCase();
-  return process.env[`${p}_DB_HOST`] || process.env.ANALYTICS_DB_HOST || 'unknown';
+export function getDbHost(env?: string): string {
+  const e = (env ?? getCurrentEnv()).toUpperCase();
+  return process.env[`${e}_DB_HOST`] || process.env.ANALYTICS_DB_HOST || 'unknown';
 }
-
-export function getCurrentEnv(): string { return _currentEnv; }
 
 // ── Query helpers ─────────────────────────────────────────────────────────────
 export async function query<T extends QueryResultRow = QueryResultRow>(
   sql: string, params: unknown[] = []
 ): Promise<QueryResult<T>> {
-  const client = await _pool.connect();
+  const client = await pools[getCurrentEnv()].connect();
   try {
     await client.query('SET statement_timeout = 10000');
     return await client.query<T>(sql, params);
@@ -63,16 +74,18 @@ export async function query<T extends QueryResultRow = QueryResultRow>(
 export async function queryWithCache<T extends QueryResultRow = QueryResultRow>(
   key: string, ttl: number, sql: string, params: unknown[] = []
 ): Promise<{ rows: T[]; cached: boolean }> {
-  const cached = cache.get<T[]>(key);
+  const envKey = `${getCurrentEnv()}:${key}`;
+  const cached = cache.get<T[]>(envKey);
   if (cached) return { rows: cached, cached: true };
   const result = await query<T>(sql, params);
-  cache.set(key, result.rows, ttl);
+  cache.set(envKey, result.rows, ttl);
   return { rows: result.rows, cached: false };
 }
 
 // ── Schema detection ──────────────────────────────────────────────────────────
 export async function getUserJoinCol(): Promise<string> {
-  if (_userJoinCol) return _userJoinCol;
+  const env = getCurrentEnv();
+  if (_userJoinColCache[env]) return _userJoinColCache[env]!;
   try {
     const result = await query(`
       SELECT column_name FROM information_schema.columns
@@ -80,9 +93,9 @@ export async function getUserJoinCol(): Promise<string> {
         AND column_name IN ('user_id','user_key')
       ORDER BY ordinal_position LIMIT 1
     `);
-    _userJoinCol = result.rows[0]?.column_name || 'user_id';
-  } catch { _userJoinCol = 'user_id'; }
-  return _userJoinCol!;
+    _userJoinColCache[env] = result.rows[0]?.column_name || 'user_id';
+  } catch { _userJoinColCache[env] = 'user_id'; }
+  return _userJoinColCache[env]!;
 }
 
-export default _pool;
+export default pools[DEFAULT_ENV];

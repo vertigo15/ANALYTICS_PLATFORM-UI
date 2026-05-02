@@ -1,9 +1,9 @@
 'use client';
 
 import { usePathname, useRouter } from 'next/navigation';
-import { MessageCircle, ChevronDown, Loader2 } from 'lucide-react';
+import { MessageCircle, ChevronDown } from 'lucide-react';
 import { useAIStore } from '@/store/ai';
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import FilterBar from './FilterBar';
 
 const PAGE_TITLES: Record<string, string> = {
@@ -21,87 +21,57 @@ const ENVS = [
   { key: 'prod', label: 'Production',  badge: 'PROD', color: 'text-red-700',   bg: 'bg-red-100',   ring: 'ring-red-200',   dot: 'bg-red-500' },
 ];
 
-const API = process.env.NEXT_PUBLIC_API_URL;
-
-function useEnv() {
-  const [env, setEnv] = useState('');
-  const [dbHost, setDbHost] = useState('');
-
-  const refresh = useCallback(() => {
-    fetch(`${API}/api/v1/health`)
-      .then(r => r.json())
-      .then(d => { setEnv(d.env || 'dev'); setDbHost(d.db_host || ''); })
-      .catch(() => setEnv('dev'));
-  }, []);
-
-  useEffect(() => { refresh(); }, [refresh]);
-
-  return { env, dbHost, refresh };
-}
+const LS_KEY = 'analytics-env';
 
 function EnvSwitcher() {
   const router = useRouter();
-  const { env, dbHost, refresh } = useEnv();
+  const [env, setEnv] = useState<string>('dev');
   const [open, setOpen] = useState(false);
-  const [switching, setSwitching] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
-  const current = ENVS.find(e => e.key === env);
-
+  // Read env from localStorage on mount (client-only)
   useEffect(() => {
-    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    const stored = localStorage.getItem(LS_KEY);
+    if (stored && ENVS.some(e => e.key === stored)) setEnv(stored);
+  }, []);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const h = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
     document.addEventListener('mousedown', h);
     return () => document.removeEventListener('mousedown', h);
   }, []);
 
-  const switchTo = async (target: string) => {
-    if (target === env || switching) return;
-    setSwitching(target);
+  const switchTo = (target: string) => {
+    if (target === env) return;
+    localStorage.setItem(LS_KEY, target);
+    setEnv(target);
     setOpen(false);
-    try {
-      const res = await fetch(`${API}/api/v1/admin/switch-env`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ env: target }),
-      });
-      if (!res.ok) throw new Error('switch failed');
-      await refresh();
-      router.refresh();
-    } catch {
-      /* silently revert */
-    } finally {
-      setSwitching(null);
-    }
+    // axios interceptor will pick up the new value on next request;
+    // router.refresh() forces Next.js to re-run server components & re-fetch data.
+    router.refresh();
   };
 
-  if (!current) return null;
+  const current = ENVS.find(e => e.key === env) ?? ENVS[0];
 
   return (
     <div ref={ref} className="relative">
       {/* Badge */}
       <button
         onClick={() => setOpen(o => !o)}
-        disabled={!!switching}
         className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-all
           ${current.bg} ${current.color} ${current.ring} ring-1 hover:ring-2`}
-        title={dbHost}
       >
-        {switching ? (
-          <Loader2 size={11} className="animate-spin" />
-        ) : (
-          <span className={`w-1.5 h-1.5 rounded-full ${current.dot}`} />
-        )}
-        {switching ? ENVS.find(e => e.key === switching)?.badge ?? '…' : current.badge}
+        <span className={`w-1.5 h-1.5 rounded-full ${current.dot}`} />
+        {current.badge}
         <ChevronDown size={11} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
 
       {/* Dropdown */}
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-64 bg-white rounded-xl shadow-xl border border-border z-50 overflow-hidden">
-          <div className="px-4 py-2.5 bg-slate-50 border-b border-border">
-            <p className="text-xs font-semibold text-text-primary">Source Database</p>
-            <p className="text-xs text-text-secondary truncate mt-0.5">{dbHost}</p>
-          </div>
+        <div className="absolute right-0 top-full mt-2 w-56 bg-white rounded-xl shadow-xl border border-border z-50 overflow-hidden">
           <div className="p-1.5">
             {ENVS.map(e => {
               const isActive = e.key === env;
@@ -109,23 +79,22 @@ function EnvSwitcher() {
                 <button
                   key={e.key}
                   onClick={() => switchTo(e.key)}
-                  disabled={isActive || !!switching}
+                  disabled={isActive}
                   className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-all
                     ${isActive
                       ? `${e.bg} ${e.color} cursor-default`
-                      : 'hover:bg-slate-50 text-text-primary hover:text-text-primary'
-                    } ${switching === e.key ? 'opacity-60' : ''}`}
+                      : 'hover:bg-slate-50 text-text-primary'
+                    }`}
                 >
                   <span className={`w-2 h-2 rounded-full flex-shrink-0 ${isActive ? e.dot : 'bg-slate-300'}`} />
                   <span className="text-sm font-medium flex-1">{e.label}</span>
                   {isActive && <span className="text-xs opacity-50 font-normal">active</span>}
-                  {switching === e.key && <Loader2 size={12} className="animate-spin" />}
                 </button>
               );
             })}
           </div>
           <div className="px-4 py-2 bg-slate-50 border-t border-border">
-            <p className="text-xs text-text-secondary">Data refreshes automatically on switch.</p>
+            <p className="text-xs text-text-secondary">Switches instantly — no restart needed.</p>
           </div>
         </div>
       )}

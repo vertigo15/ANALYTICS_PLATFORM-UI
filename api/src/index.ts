@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { randomUUID } from 'crypto';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
-import pool from './db';
+import pool, { runWithEnv } from './db';
 import healthRoutes from './routes/health';
 import freshnessRoutes from './routes/freshness';
 import organisationsRoutes from './routes/organisations';
@@ -47,9 +47,16 @@ async function start() {
 
   await fastify.register(cors, { origin: true });
 
+  // Propagate x-analytics-env header into the AsyncLocalStorage env context
+  // for every request — works correctly across all replicas.
+  fastify.addHook('onRequest', (request, _reply, done) => {
+    const raw = (request.headers['x-analytics-env'] as string) || '';
+    runWithEnv(raw, done);
+  });
+
   await fastify.register(healthRoutes,        { prefix: '/api/v1' });
   await fastify.register(freshnessRoutes,     { prefix: '/api/v1' });
-  await fastify.register(organisationsRoutes, { prefix: '/api/v1/users' });
+  await fastify.register(organisationsRoutes, { prefix: '/api/v1' });
   await fastify.register(agentsRoutes,        { prefix: '/api/v1/agents' });
   await fastify.register(costRoutes,          { prefix: '/api/v1/cost' });
   await fastify.register(usersRoutes,         { prefix: '/api/v1/users' });
