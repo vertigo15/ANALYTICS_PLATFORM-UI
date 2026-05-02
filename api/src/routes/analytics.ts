@@ -442,6 +442,7 @@ export default async function analyticsRoutes(fastify: FastifyInstance) {
   }>('/conversations/:conversationId', async (request, reply) => {
     const { conversationId } = request.params;
 
+    const userJoinCol = await getUserJoinCol();
     const cacheKey = `analytics:conv-detail:${conversationId}`;
     const cacheTTL = 3300;
 

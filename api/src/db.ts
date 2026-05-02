@@ -70,7 +70,7 @@ export async function getUserJoinCol(): Promise<string> {
   } catch {
     _userJoinCol = 'user_id';
   }
-  return _userJoinCol;
+  return _userJoinCol!;
 }
 
 export default pool;
