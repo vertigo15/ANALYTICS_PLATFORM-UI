@@ -8,16 +8,18 @@ interface UserKPIs {
     wau: number;
     mau: number;
     new_users: number;
+    new_active_users: number;
     interactions_per_dau: number;
-    power_user_ratio: number;
+    churn_rate: number;
   };
   previous: {
     dau: number;
     wau: number;
     mau: number;
     new_users: number;
+    new_active_users: number;
     interactions_per_dau: number;
-    power_user_ratio: number;
+    churn_rate: number;
   };
   dau_sparkline: number[];
   wau_sparkline: number[];
@@ -99,7 +101,6 @@ export default async function usersRoutes(fastify: FastifyInstance) {
         const fromDate = new Date(from);
         const toDate = new Date(to);
         const duration = toDate.getTime() - fromDate.getTime();
-        const durationDays = Math.ceil(duration / 86400000);
         const prevTo = new Date(fromDate.getTime() - 86400000);
         const prevFrom = new Date(prevTo.getTime() - duration);
 
@@ -111,9 +112,6 @@ export default async function usersRoutes(fastify: FastifyInstance) {
         yesterday.setDate(yesterday.getDate() - 1);
         const yesterdayStr = yesterday.toISOString().split('T')[0];
         
-        // Calculate adaptive threshold for power users: min(3, period/3)
-        const powerUserThreshold = Math.max(1, Math.min(3, Math.floor(durationDays / 3)));
-
         const sql = `
           WITH daily_stats AS (
             SELECT
@@ -150,57 +148,83 @@ export default async function usersRoutes(fastify: FastifyInstance) {
             FROM gold.mart_llm_cost_by_user_model_day
             WHERE date_day >= $3 AND date_day <= $4
           ),
-          daily_user_counts AS (
+          daily_interactions_current AS (
             SELECT 
               date_day,
-              COUNT(DISTINCT user_id) as dau
+              COUNT(DISTINCT user_id) as dau,
+              SUM(total_requests) as messages,
+              CASE WHEN COUNT(DISTINCT user_id) > 0
+                THEN SUM(total_requests)::float / COUNT(DISTINCT user_id)
+                ELSE 0
+              END as interactions_per_dau
             FROM gold.mart_llm_cost_by_user_model_day
             WHERE date_day >= $1 AND date_day <= $2
             GROUP BY date_day
-            HAVING COUNT(DISTINCT user_id) > 0
           ),
-          avg_dau_current AS (
-            SELECT AVG(dau) as avg_dau FROM daily_user_counts
+          avg_interactions_current AS (
+            SELECT AVG(interactions_per_dau) as avg_ipd FROM daily_interactions_current
           ),
-          prev_daily_user_counts AS (
+          daily_interactions_previous AS (
             SELECT 
               date_day,
-              COUNT(DISTINCT user_id) as dau
+              COUNT(DISTINCT user_id) as dau,
+              SUM(total_requests) as messages,
+              CASE WHEN COUNT(DISTINCT user_id) > 0
+                THEN SUM(total_requests)::float / COUNT(DISTINCT user_id)
+                ELSE 0
+              END as interactions_per_dau
             FROM gold.mart_llm_cost_by_user_model_day
             WHERE date_day >= $3 AND date_day <= $4
             GROUP BY date_day
-            HAVING COUNT(DISTINCT user_id) > 0
           ),
-          avg_dau_previous AS (
-            SELECT AVG(dau) as avg_dau FROM prev_daily_user_counts
+          avg_interactions_previous AS (
+            SELECT AVG(interactions_per_dau) as avg_ipd FROM daily_interactions_previous
           ),
-          user_activity_days_current AS (
+          new_active_users_current AS (
+            SELECT COUNT(DISTINCT user_id)::integer as cnt
+            FROM (
+              SELECT user_id, MIN(date_day) as first_activity
+              FROM gold.mart_llm_cost_by_user_model_day
+              GROUP BY user_id
+            ) fa
+            WHERE fa.first_activity >= $1 AND fa.first_activity <= $2
+          ),
+          new_active_users_previous AS (
+            SELECT COUNT(DISTINCT user_id)::integer as cnt
+            FROM (
+              SELECT user_id, MIN(date_day) as first_activity
+              FROM gold.mart_llm_cost_by_user_model_day
+              GROUP BY user_id
+            ) fa
+            WHERE fa.first_activity >= $3 AND fa.first_activity <= $4
+          ),
+          churn_current AS (
             SELECT
-              user_id,
-              COUNT(DISTINCT date_day) as active_days
-            FROM gold.mart_llm_cost_by_user_model_day
-            WHERE date_day >= $1 AND date_day <= $2
-            GROUP BY user_id
+              COUNT(DISTINCT prev.user_id)::integer as prev_active,
+              COUNT(DISTINCT prev.user_id) FILTER (
+                WHERE prev.user_id NOT IN (
+                  SELECT DISTINCT user_id FROM gold.mart_llm_cost_by_user_model_day
+                  WHERE date_day >= $1 AND date_day <= $2
+                )
+              )::integer as churned
+            FROM (
+              SELECT DISTINCT user_id FROM gold.mart_llm_cost_by_user_model_day
+              WHERE date_day >= $3 AND date_day <= $4
+            ) prev
           ),
-          power_users_current AS (
+          churn_previous AS (
             SELECT
-              COUNT(*) FILTER (WHERE active_days >= $6) as power_users,
-              COUNT(*) as total_users
-            FROM user_activity_days_current
-          ),
-          user_activity_days_previous AS (
-            SELECT
-              user_id,
-              COUNT(DISTINCT date_day) as active_days
-            FROM gold.mart_llm_cost_by_user_model_day
-            WHERE date_day >= $3 AND date_day <= $4
-            GROUP BY user_id
-          ),
-          power_users_previous AS (
-            SELECT
-              COUNT(*) FILTER (WHERE active_days >= $6) as power_users,
-              COUNT(*) as total_users
-            FROM user_activity_days_previous
+              COUNT(DISTINCT prev2.user_id)::integer as prev_active,
+              COUNT(DISTINCT prev2.user_id) FILTER (
+                WHERE prev2.user_id NOT IN (
+                  SELECT DISTINCT user_id FROM gold.mart_llm_cost_by_user_model_day
+                  WHERE date_day >= $3 AND date_day <= $4
+                )
+              )::integer as churned
+            FROM (
+              SELECT DISTINCT user_id FROM gold.mart_llm_cost_by_user_model_day
+              WHERE date_day >= ($3::date - ($2::date - $1::date)) AND date_day < $3
+            ) prev2
           ),
           new_users_current AS (
             SELECT COUNT(*) as new_users
@@ -235,14 +259,11 @@ export default async function usersRoutes(fastify: FastifyInstance) {
               'wau', COALESCE(cp.wau, 0),
               'mau', COALESCE(cp.mau, 0),
               'new_users', COALESCE(nuc.new_users, 0),
-              'interactions_per_dau', CASE 
-                WHEN COALESCE(adc.avg_dau, 0) > 0 
-                THEN COALESCE(cp.total_messages, 0) / adc.avg_dau 
-                ELSE 0 
-              END,
-              'power_user_ratio', CASE
-                WHEN COALESCE(puc.total_users, 0) > 0
-                THEN (puc.power_users::float / puc.total_users) * 100
+              'new_active_users', COALESCE(nauc.cnt, 0),
+              'interactions_per_dau', COALESCE(aic.avg_ipd, 0),
+              'churn_rate', CASE
+                WHEN COALESCE(cc.prev_active, 0) > 0
+                THEN (cc.churned::float / cc.prev_active) * 100
                 ELSE 0
               END
             ) as current,
@@ -251,14 +272,11 @@ export default async function usersRoutes(fastify: FastifyInstance) {
               'wau', COALESCE(pp.wau, 0),
               'mau', COALESCE(pp.mau, 0),
               'new_users', COALESCE(nup.new_users, 0),
-              'interactions_per_dau', CASE 
-                WHEN COALESCE(adp.avg_dau, 0) > 0 
-                THEN COALESCE(pp.total_messages, 0) / adp.avg_dau 
-                ELSE 0 
-              END,
-              'power_user_ratio', CASE
-                WHEN COALESCE(pup.total_users, 0) > 0
-                THEN (pup.power_users::float / pup.total_users) * 100
+              'new_active_users', COALESCE(naup.cnt, 0),
+              'interactions_per_dau', COALESCE(aip.avg_ipd, 0),
+              'churn_rate', CASE
+                WHEN COALESCE(cp2.prev_active, 0) > 0
+                THEN (cp2.churned::float / cp2.prev_active) * 100
                 ELSE 0
               END
             ) as previous,
@@ -268,10 +286,12 @@ export default async function usersRoutes(fastify: FastifyInstance) {
           CROSS JOIN previous_period pp
           CROSS JOIN new_users_current nuc
           CROSS JOIN new_users_previous nup
-          CROSS JOIN avg_dau_current adc
-          CROSS JOIN avg_dau_previous adp
-          CROSS JOIN power_users_current puc
-          CROSS JOIN power_users_previous pup
+          CROSS JOIN new_active_users_current nauc
+          CROSS JOIN new_active_users_previous naup
+          CROSS JOIN avg_interactions_current aic
+          CROSS JOIN avg_interactions_previous aip
+          CROSS JOIN churn_current cc
+          CROSS JOIN churn_previous cp2
           CROSS JOIN dau_sparkline ds
           CROSS JOIN wau_sparkline ws
         `;
@@ -280,14 +300,14 @@ export default async function usersRoutes(fastify: FastifyInstance) {
           cacheKey,
           cacheTTL,
           sql,
-          [from, to, prevFromStr, prevToStr, yesterdayStr, powerUserThreshold]
+          [from, to, prevFromStr, prevToStr, yesterdayStr]
         );
 
         if (rows.length === 0) {
           return {
             data: {
-              current: { dau: 0, wau: 0, mau: 0, new_users: 0, interactions_per_dau: 0, power_user_ratio: 0 },
-              previous: { dau: 0, wau: 0, mau: 0, new_users: 0, interactions_per_dau: 0, power_user_ratio: 0 },
+              current: { dau: 0, wau: 0, mau: 0, new_users: 0, new_active_users: 0, interactions_per_dau: 0, churn_rate: 0 },
+              previous: { dau: 0, wau: 0, mau: 0, new_users: 0, new_active_users: 0, interactions_per_dau: 0, churn_rate: 0 },
               dau_sparkline: [],
               wau_sparkline: [],
             },
@@ -434,13 +454,39 @@ export default async function usersRoutes(fastify: FastifyInstance) {
   );
 
   // GET /api/v1/users/summary
-  fastify.get<{ Reply: ApiResponse<UserSummary[]> }>(
+  fastify.get<{ Querystring: QueryParams; Reply: ApiResponse<UserSummary[]> }>(
     '/summary',
-    async (_request, reply) => {
-      const cacheKey = 'users:summary';
+    async (request, reply) => {
+      const { from, to } = request.query;
+      const hasDateFilter = from && to;
+      const cacheKey = hasDateFilter ? `users:summary:${from}:${to}` : 'users:summary';
 
       try {
-        const sql = `
+        const sql = hasDateFilter
+          ? `
+          SELECT
+            u.user_id,
+            u.email,
+            u.organization_id as org,
+            COUNT(DISTINCT DATE_TRUNC('day', c.date_day))::integer as conversations,
+            COALESCE(SUM(c.total_requests), 0)::integer as messages,
+            COALESCE(SUM(c.total_tokens), 0)::bigint as tokens,
+            COALESCE(SUM(c.est_cost_usd), 0)::numeric as cost,
+            MAX(all_activity.last_active) as last_active_at,
+            u.account_created_at,
+            u.is_deleted
+          FROM gold.dim_users u
+          LEFT JOIN gold.mart_llm_cost_by_user_model_day c
+            ON u.user_id = c.user_id AND c.date_day >= $1 AND c.date_day <= $2
+          LEFT JOIN LATERAL (
+            SELECT MAX(date_day) as last_active
+            FROM gold.mart_llm_cost_by_user_model_day
+            WHERE user_id = u.user_id
+          ) all_activity ON true
+          GROUP BY u.user_id, u.email, u.organization_id, u.account_created_at, u.is_deleted
+          ORDER BY cost DESC
+        `
+          : `
           SELECT
             u.user_id,
             u.email,
@@ -462,12 +508,13 @@ export default async function usersRoutes(fastify: FastifyInstance) {
           cacheKey,
           cacheTTL,
           sql,
-          []
+          hasDateFilter ? [from, to] : []
         );
 
         return {
           data: rows,
           meta: {
+            ...(hasDateFilter ? { from, to } : {}),
             generated_at: new Date().toISOString(),
             cached,
           },
@@ -619,4 +666,55 @@ export default async function usersRoutes(fastify: FastifyInstance) {
       throw new Error('Failed to fetch user detail');
     }
   });
+  // GET /api/v1/users/sharing — sharing activity KPIs + trend
+  fastify.get<{ Querystring: QueryParams }>('/sharing', async (request, reply) => {
+    const { from, to } = request.query;
+    if (!from || !to) { reply.code(400); throw new Error('from and to required'); }
+
+    const cacheTTL = 3300;
+    try {
+      const [kpiRes, trendRes] = await Promise.all([
+        queryWithCache(
+          `sharing:kpis:${from}:${to}`, cacheTTL,
+          `SELECT
+            COALESCE(SUM(CASE WHEN feature_type='agent'  THEN active_shares ELSE 0 END),0)::int  AS active_agent_shares,
+            COALESCE(SUM(CASE WHEN feature_type='source' THEN active_shares ELSE 0 END),0)::int  AS active_source_shares,
+            COALESCE(SUM(CASE WHEN feature_type='skill'  THEN active_shares ELSE 0 END),0)::int  AS active_skill_shares,
+            COALESCE(SUM(active_shares),0)::int    AS total_active_shares,
+            COALESCE(SUM(shares_granted),0)::int   AS total_granted,
+            COALESCE(SUM(shares_revoked),0)::int   AS total_revoked,
+            COALESCE(MAX(unique_granters),0)::int  AS unique_sharers,
+            COALESCE(MAX(unique_recipients),0)::int AS unique_recipients
+           FROM gold.mart_sharing_activity_daily
+           WHERE date_day >= $1 AND date_day <= $2`,
+          [from, to]
+        ),
+        queryWithCache(
+          `sharing:trend:${from}:${to}`, cacheTTL,
+          `SELECT date_day::text, feature_type,
+            SUM(shares_granted)::int  AS granted,
+            SUM(shares_revoked)::int  AS revoked,
+            SUM(active_shares)::int   AS active
+           FROM gold.mart_sharing_activity_daily
+           WHERE date_day >= $1 AND date_day <= $2
+           GROUP BY date_day, feature_type
+           ORDER BY date_day`,
+          [from, to]
+        ),
+      ]);
+
+      return {
+        data: { kpis: kpiRes.rows[0] ?? {}, trend: trendRes.rows },
+        meta: { from, to, generated_at: new Date().toISOString(), cached: kpiRes.cached },
+      };
+    } catch (error: any) {
+      if (error?.code === '42P01') {
+        return { data: { kpis: {}, trend: [] }, meta: { from, to, generated_at: new Date().toISOString(), cached: false } };
+      }
+      fastify.log.error(error);
+      reply.code(500);
+      throw new Error('Failed to fetch sharing data');
+    }
+  });
+
 }

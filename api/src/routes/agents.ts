@@ -32,23 +32,26 @@ interface AgentPerformance {
   total_conversations: number;
   total_messages: number;
   avg_messages_per_conv: number;
+  total_tokens: number;
   est_cost_usd: number;
   reactions_positive: number;
   reactions_negative: number;
 }
 
+interface AgentLatencyKPIs {
+  avg_latency_sec: number;
+  p95_latency_sec: number;
+  avg_ttft_ms: number | null;
+  avg_tokens_per_sec: number | null;
+  agents_with_latency: number;
+}
+
 interface AgentKPIs {
-  current: {
-    active_agents: number;
-    total_conversations: number;
-    avg_satisfaction_rate: number;
-    most_used_agent: { agent_id: string; agent_name: string; total_conversations: number } | null;
-  };
-  previous: {
-    active_agents: number;
-    total_conversations: number;
-    avg_satisfaction_rate: number;
-  };
+  active_agents: number;
+  total_agent_cost: number;
+  total_tokens: number;
+  avg_unique_users_per_day: number;
+  avg_messages_per_agent: number;
 }
 
 interface AgentDetail extends AgentSummary {
@@ -91,43 +94,91 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // GET /api/v1/agents/summary
-  fastify.get<{ Reply: ApiResponse<AgentSummary[]> }>('/summary', async (_request, reply) => {
+  // GET /api/v1/agents/summary?from=&to= (optional date filter)
+  fastify.get<{ Querystring: QueryParams; Reply: ApiResponse<AgentSummary[]> }>('/summary', async (request, reply) => {
+    const { from, to } = request.query;
     const cacheTTL = 3300;
-    const cacheKey = 'agents:summary';
+    const cacheKey = `agents:summary:${from || 'all'}:${to || 'all'}`;
 
     try {
+      let sql: string;
+      let params: string[] = [];
+
+      if (from && to) {
+        // Date-filtered summary derived from mart_llm_cost_by_user_model_day
+        sql = `
+          WITH filtered AS (
+            SELECT
+              c.agent_id,
+              c.agent_name,
+              COALESCE(SUM(c.total_requests), 0) as total_messages,
+              COALESCE(SUM(c.total_tokens), 0) as total_tokens,
+              COALESCE(SUM(c.est_cost_usd), 0) as total_est_cost_usd,
+              COUNT(DISTINCT c.user_id) as total_unique_users
+            FROM gold.mart_llm_cost_by_user_model_day c
+            WHERE c.agent_id IS NOT NULL
+              AND c.date_day >= $1 AND c.date_day <= $2
+            GROUP BY c.agent_id, c.agent_name
+          )
+          SELECT
+            f.agent_id,
+            COALESCE(f.agent_name, a.agent_name) as agent_name,
+            COALESCE(a.agent_type, 'unknown') as agent_type,
+            '' as owner_email,
+            f.total_unique_users,
+            0 as total_conversations,
+            f.total_messages,
+            f.total_tokens,
+            f.total_est_cost_usd,
+            0 as satisfaction_rate,
+            0 as total_positive_reactions,
+            0 as total_negative_reactions,
+            NULL as last_interacted_at,
+            COALESCE(a.is_deleted, false) as is_deleted
+          FROM filtered f
+          LEFT JOIN gold.dim_agents a ON f.agent_id = a.agent_id
+          ORDER BY f.total_messages DESC`;
+        params = [from, to];
+      } else {
+        // Full summary from mart_agent_summary
+        sql = `
+          SELECT 
+            agent_id,
+            agent_name,
+            agent_type,
+            owner_email,
+            COALESCE(total_unique_users, 0) as total_unique_users,
+            COALESCE(total_conversations, 0) as total_conversations,
+            COALESCE(total_messages, 0) as total_messages,
+            COALESCE(total_tokens, 0) as total_tokens,
+            COALESCE(total_est_cost_usd, 0) as total_est_cost_usd,
+            COALESCE(
+              CASE 
+                WHEN (total_positive_reactions + total_negative_reactions) > 0
+                THEN (total_positive_reactions::float / (total_positive_reactions + total_negative_reactions)) * 100
+                ELSE 0
+              END, 0
+            ) as satisfaction_rate,
+            COALESCE(total_positive_reactions, 0) as total_positive_reactions,
+            COALESCE(total_negative_reactions, 0) as total_negative_reactions,
+            last_interacted_at::text,
+            is_deleted
+          FROM gold.mart_agent_summary
+          ORDER BY total_messages DESC`;
+      }
+
       const { rows, cached } = await queryWithCache<AgentSummary>(
         cacheKey,
         cacheTTL,
-        `SELECT 
-          agent_id,
-          agent_name,
-          agent_type,
-          owner_email,
-          total_unique_users,
-          total_conversations,
-          total_messages,
-          total_tokens,
-          total_est_cost_usd,
-          COALESCE(
-            CASE 
-              WHEN (total_positive_reactions + total_negative_reactions) > 0
-              THEN (total_positive_reactions::float / (total_positive_reactions + total_negative_reactions)) * 100
-              ELSE 0
-            END, 0
-          ) as satisfaction_rate,
-          total_positive_reactions,
-          total_negative_reactions,
-          last_interacted_at::text,
-          is_deleted
-         FROM gold.mart_agent_summary
-         ORDER BY total_conversations DESC`
+        sql,
+        params
       );
 
       return {
         data: rows,
         meta: {
+          from,
+          to,
           generated_at: new Date().toISOString(),
           cached,
         },
@@ -139,7 +190,7 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // GET /api/v1/agents/performance
+  // GET /api/v1/agents/performance - derived from mart_llm_cost_by_user_model_day
   fastify.get<{ Querystring: QueryParams; Reply: ApiResponse<AgentPerformance[]> }>(
     '/performance',
     async (request, reply) => {
@@ -159,15 +210,17 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
             date_day::text,
             agent_id,
             agent_name,
-            unique_users,
-            total_conversations,
-            total_messages,
-            avg_messages_per_conv,
-            est_cost_usd,
-            reactions_positive,
-            reactions_negative
-          FROM gold.mart_agent_performance_daily
-          WHERE date_day >= $1 AND date_day <= $2
+            COUNT(DISTINCT user_id)::int as unique_users,
+            0 as total_conversations,
+            COALESCE(SUM(total_requests), 0)::int as total_messages,
+            0 as avg_messages_per_conv,
+            COALESCE(SUM(total_tokens), 0)::bigint as total_tokens,
+            COALESCE(SUM(est_cost_usd), 0)::float as est_cost_usd,
+            0 as reactions_positive,
+            0 as reactions_negative
+          FROM gold.mart_llm_cost_by_user_model_day
+          WHERE agent_id IS NOT NULL
+            AND date_day >= $1 AND date_day <= $2
         `;
         const params: (string | null)[] = [from, to];
 
@@ -176,7 +229,7 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
           params.push(agent_id);
         }
 
-        sql += ` ORDER BY date_day, agent_name`;
+        sql += ` GROUP BY date_day, agent_id, agent_name ORDER BY date_day, agent_name`;
 
         const { rows, cached } = await queryWithCache<AgentPerformance>(
           cacheKey,
@@ -217,115 +270,56 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
       const cacheTTL = 3300;
 
       try {
-        // Calculate previous period
-        const fromDate = new Date(from);
-        const toDate = new Date(to);
-        const duration = toDate.getTime() - fromDate.getTime();
-        const prevTo = new Date(fromDate.getTime() - 86400000);
-        const prevFrom = new Date(prevTo.getTime() - duration);
-
-        const prevFromStr = prevFrom.toISOString().split('T')[0];
-        const prevToStr = prevTo.toISOString().split('T')[0];
-
+        // Derive KPIs from mart_llm_cost_by_user_model_day (date-filtered)
         const sql = `
-          WITH current_period AS (
-            SELECT 
-              COUNT(DISTINCT agent_id) as active_agents,
-              SUM(total_conversations) as total_conversations,
-              AVG(
-                CASE 
-                  WHEN (reactions_positive + reactions_negative) > 0
-                  THEN (reactions_positive::float / (reactions_positive + reactions_negative)) * 100
-                  ELSE NULL
-                END
-              ) as avg_satisfaction_rate
-            FROM gold.mart_agent_performance_daily
-            WHERE date_day >= $1 AND date_day <= $2
-              AND total_conversations > 0
-          ),
-          previous_period AS (
-            SELECT 
-              COUNT(DISTINCT agent_id) as active_agents,
-              SUM(total_conversations) as total_conversations,
-              AVG(
-                CASE 
-                  WHEN (reactions_positive + reactions_negative) > 0
-                  THEN (reactions_positive::float / (reactions_positive + reactions_negative)) * 100
-                  ELSE NULL
-                END
-              ) as avg_satisfaction_rate
-            FROM gold.mart_agent_performance_daily
-            WHERE date_day >= $3 AND date_day <= $4
-              AND total_conversations > 0
-          ),
-          most_used AS (
-            SELECT 
+          WITH daily AS (
+            SELECT
+              date_day,
               agent_id,
-              agent_name,
-              SUM(total_conversations) as total_conversations
-            FROM gold.mart_agent_performance_daily
-            WHERE date_day >= $1 AND date_day <= $2
-            GROUP BY agent_id, agent_name
-            ORDER BY total_conversations DESC
-            LIMIT 1
+              COALESCE(SUM(total_requests), 0) as day_messages,
+              COALESCE(SUM(total_tokens), 0) as day_tokens,
+              COALESCE(SUM(est_cost_usd), 0) as day_cost,
+              COUNT(DISTINCT user_id) as day_unique_users
+            FROM gold.mart_llm_cost_by_user_model_day
+            WHERE agent_id IS NOT NULL
+              AND date_day >= $1 AND date_day <= $2
+            GROUP BY date_day, agent_id
+          ),
+          daily_users AS (
+            SELECT date_day, SUM(day_unique_users) as total_unique_users
+            FROM daily
+            GROUP BY date_day
           )
-          SELECT 
-            json_build_object(
-              'active_agents', COALESCE(cp.active_agents, 0),
-              'total_conversations', COALESCE(cp.total_conversations, 0),
-              'avg_satisfaction_rate', COALESCE(cp.avg_satisfaction_rate, 0),
-              'most_used_agent', CASE 
-                WHEN mu.agent_id IS NOT NULL THEN json_build_object(
-                  'agent_id', mu.agent_id,
-                  'agent_name', mu.agent_name,
-                  'total_conversations', mu.total_conversations
-                )
-                ELSE NULL
-              END
-            ) as current,
-            json_build_object(
-              'active_agents', COALESCE(pp.active_agents, 0),
-              'total_conversations', COALESCE(pp.total_conversations, 0),
-              'avg_satisfaction_rate', COALESCE(pp.avg_satisfaction_rate, 0)
-            ) as previous
-          FROM current_period cp
-          CROSS JOIN previous_period pp
-          LEFT JOIN most_used mu ON true
+          SELECT
+            COUNT(DISTINCT d.agent_id)::int as active_agents,
+            COALESCE(SUM(d.day_cost), 0)::float as total_agent_cost,
+            COALESCE(SUM(d.day_tokens), 0)::bigint as total_tokens,
+            COALESCE((SELECT AVG(total_unique_users) FROM daily_users), 0)::float as avg_unique_users_per_day,
+            CASE
+              WHEN COUNT(DISTINCT d.agent_id) > 0
+              THEN (COALESCE(SUM(d.day_messages), 0)::float / COUNT(DISTINCT d.agent_id))
+              ELSE 0
+            END as avg_messages_per_agent
+          FROM daily d
         `;
 
         const { rows, cached } = await queryWithCache<AgentKPIs>(
           cacheKey,
           cacheTTL,
           sql,
-          [from, to, prevFromStr, prevToStr]
+          [from, to]
         );
 
-        if (rows.length === 0) {
-          return {
-            data: {
-              current: {
-                active_agents: 0,
-                total_conversations: 0,
-                avg_satisfaction_rate: 0,
-                most_used_agent: null,
-              },
-              previous: {
-                active_agents: 0,
-                total_conversations: 0,
-                avg_satisfaction_rate: 0,
-              },
-            },
-            meta: {
-              from,
-              to,
-              generated_at: new Date().toISOString(),
-              cached,
-            },
-          };
-        }
+        const defaultKpis: AgentKPIs = {
+          active_agents: 0,
+          total_agent_cost: 0,
+          total_tokens: 0,
+          avg_unique_users_per_day: 0,
+          avg_messages_per_agent: 0,
+        };
 
         return {
-          data: rows[0],
+          data: rows.length > 0 ? rows[0] : defaultKpis,
           meta: {
             from,
             to,
@@ -468,4 +462,44 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
       throw new Error('Failed to fetch agent detail');
     }
   });
+  // GET /api/v1/agents/latency — response time KPIs from mart_agent_performance_daily
+  fastify.get<{ Querystring: QueryParams }>('/latency', async (request, reply) => {
+    const { from, to } = request.query;
+    if (!from || !to) { reply.code(400); throw new Error('from and to required'); }
+
+    const cacheKey = `agents:latency:${from}:${to}`;
+    const cacheTTL = 3300;
+    try {
+      const { rows, cached } = await queryWithCache<AgentLatencyKPIs>(
+        cacheKey, cacheTTL,
+        `SELECT
+          ROUND(AVG(avg_response_latency_seconds)::numeric, 2)::float    AS avg_latency_sec,
+          ROUND(
+            PERCENTILE_CONT(0.95) WITHIN GROUP
+              (ORDER BY p95_response_latency_seconds)::numeric, 2
+          )::float                                                        AS p95_latency_sec,
+          ROUND(AVG(avg_ttft_ms)::numeric, 0)::float                     AS avg_ttft_ms,
+          ROUND(AVG(avg_output_tokens_per_second)::numeric, 2)::float    AS avg_tokens_per_sec,
+          COUNT(DISTINCT agent_id)::int                                  AS agents_with_latency
+         FROM gold.mart_agent_performance_daily
+         WHERE date_day >= $1 AND date_day <= $2
+           AND avg_response_latency_seconds IS NOT NULL`,
+        [from, to]
+      );
+
+      const defaults: AgentLatencyKPIs = {
+        avg_latency_sec: 0, p95_latency_sec: 0,
+        avg_ttft_ms: null, avg_tokens_per_sec: null, agents_with_latency: 0,
+      };
+      return {
+        data: rows[0] ?? defaults,
+        meta: { from, to, generated_at: new Date().toISOString(), cached },
+      };
+    } catch (error) {
+      fastify.log.error(error);
+      reply.code(500);
+      throw new Error('Failed to fetch agent latency');
+    }
+  });
+
 }

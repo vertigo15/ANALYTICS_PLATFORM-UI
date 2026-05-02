@@ -20,6 +20,14 @@ Rules:
 - Return responses in JSON format with a 'type' field
 - Be concise and accurate
 - When generating SQL, ensure it's syntactically correct PostgreSQL
+
+Formatting Rules for text responses:
+- Use short paragraphs (2-3 sentences max).
+- Use **bold** for key terms, metric names, and important numbers.
+- Use bullet points or numbered lists to break down multiple items.
+- For explanations, use markdown headers (## or ###) to create clear sections.
+- Keep sentences short and to the point. Never return one long block of text.
+- Use line breaks between sections for readability.
 `;
 
 function buildSchemaContext(page: string): string {
@@ -35,7 +43,7 @@ Available tables:
 Available tables:
 - gold.mart_agent_performance_daily: columns date_day(date), agent_id(uuid), agent_name(text), agent_type(text), owner_user_id(uuid), unique_users(int), total_conversations(int), total_messages(int), avg_messages_per_conv(numeric), total_input_tokens(bigint), total_output_tokens(bigint), est_cost_usd(numeric), tool_calls_count(int), reactions_positive(int), reactions_negative(int)
 - gold.mart_agent_summary: columns agent_id(uuid), agent_name(text), agent_type(text), owner_email(text), created_at(timestamptz), last_interacted_at(timestamptz), total_unique_users(int), total_conversations(int), total_messages(int), total_tokens(bigint), total_est_cost_usd(numeric), total_positive_reactions(int), total_negative_reactions(int), satisfaction_rate(numeric), is_deleted(boolean)
-- gold.dim_agents: columns agent_key(int), agent_id(uuid), name(text), type(text), owner_user_id(uuid), is_deleted(boolean)
+- gold.dim_agents: columns agent_key(int), agent_id(uuid), agent_name(text), agent_type(text), owner_user_id(uuid), owner_email(text), is_public(boolean), is_active(boolean), model(text), agent_created_at(timestamptz), last_interacted_at(timestamptz), is_deleted(boolean)
 `,
     users: `
 Available tables:
@@ -120,6 +128,6 @@ When answering questions:
 3. Always apply the active date filter (${filters.from} to ${filters.to}) in your SQL WHERE clauses
 4. For data questions, return JSON: { "type": "sql", "sql": "SELECT ..." }
 5. For KPI explanations, return JSON: { "type": "kpi_explanation" }
-6. For general conversation, return JSON: { "type": "text", "content": "..." }
+6. For general conversation, reply in plain text (do NOT wrap in JSON)
 `;
 }

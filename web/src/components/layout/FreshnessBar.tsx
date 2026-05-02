@@ -11,6 +11,7 @@ import type { ApiResponse, FreshnessData } from '@/lib/api';
 const PAGE_TO_KEY: Record<string, keyof FreshnessData> = {
   '/dashboard/cost': 'cost',
   '/dashboard/agents': 'agents',
+  '/dashboard/analytics': 'agents',
   '/dashboard/users': 'users',
   '/dashboard/documents': 'documents',
   '/dashboard/operations': 'operations',

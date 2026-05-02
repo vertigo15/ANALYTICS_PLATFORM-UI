@@ -4,11 +4,12 @@ import { useState, useMemo } from 'react';
 import useSWR from 'swr';
 import { fetcher } from '@/lib/fetcher';
 import { useFiltersStore } from '@/store/filters';
-import { formatCost, formatTokens, formatPercent, formatDateShort, formatRelativeTime } from '@/lib/formatters';
+import { formatCost, formatTokens, formatDateShort, formatRelativeTime } from '@/lib/formatters';
 import { CHART_COLORS } from '@/lib/constants';
 import type {
   ApiResponse,
   AgentKPIs,
+  AgentLatencyKPIs,
   AgentSummary,
   AgentPerformance,
   AgentDetail,
@@ -17,15 +18,19 @@ import KpiRow from '@/components/dashboard/KpiRow';
 import ChartCard from '@/components/dashboard/ChartCard';
 import LineChart from '@/components/charts/LineChart';
 import BarChart from '@/components/charts/BarChart';
-import AreaChart from '@/components/charts/AreaChart';
 import DataTable, { DataTableColumn } from '@/components/dashboard/DataTable';
 import SlideOver from '@/components/dashboard/SlideOver';
 import StatusBadge from '@/components/dashboard/StatusBadge';
 import type { EChartsOption } from 'echarts';
 
+type UsageMetric = 'messages' | 'tokens' | 'cost' | 'unique_users';
+type ActivityMetric = 'messages' | 'tokens' | 'cost' | 'unique_users';
+
 export default function AgentsPage() {
   const { from, to } = useFiltersStore();
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [usageMetric, setUsageMetric] = useState<UsageMetric>('messages');
+  const [activityMetric, setActivityMetric] = useState<ActivityMetric>('messages');
 
   const queryParams = new URLSearchParams({ from, to }).toString();
 
@@ -36,12 +41,17 @@ export default function AgentsPage() {
   );
 
   const { data: summaryData, isLoading: summaryLoading } = useSWR<ApiResponse<AgentSummary[]>>(
-    '/agents/summary',
+    `/agents/summary?${queryParams}`,
     fetcher
   );
 
   const { data: performanceData, isLoading: performanceLoading } = useSWR<ApiResponse<AgentPerformance[]>>(
     `/agents/performance?${queryParams}`,
+    fetcher
+  );
+
+  const { data: latencyData, isLoading: latencyLoading } = useSWR<ApiResponse<AgentLatencyKPIs>>(
+    `/agents/latency?${queryParams}`,
     fetcher
   );
 
@@ -51,74 +61,97 @@ export default function AgentsPage() {
   );
 
   const kpis = kpisData?.data;
+  const latency = latencyData?.data;
   const agents = summaryData?.data || [];
   const performance = performanceData?.data || [];
   const agentDetail = agentDetailData?.data;
-
-  // Calculate deltas
-  const activeAgentsDelta = kpis
-    ? ((kpis.current.active_agents - kpis.previous.active_agents) /
-        (kpis.previous.active_agents || 1)) * 100
-    : 0;
-
-  const conversationsDelta = kpis
-    ? ((kpis.current.total_conversations - kpis.previous.total_conversations) /
-        (kpis.previous.total_conversations || 1)) * 100
-    : 0;
-
-  const satisfactionDelta = kpis
-    ? kpis.current.avg_satisfaction_rate - kpis.previous.avg_satisfaction_rate
-    : 0;
 
   // KPI cards
   const kpiCards = [
     {
       title: 'Active Agents',
-      value: kpis?.current.active_agents.toString() || '0',
-      previousValue: kpis?.previous.active_agents.toString(),
-      delta: activeAgentsDelta,
-      deltaDirection: 'up-good' as const,
+      value: kpis?.active_agents?.toString() || '0',
       isLoading: kpisLoading,
+      tooltip: 'Agents with at least one transaction in the selected period',
     },
     {
-      title: 'Total Conversations',
-      value: kpis?.current.total_conversations.toLocaleString() || '0',
-      previousValue: kpis?.previous.total_conversations.toLocaleString(),
-      delta: conversationsDelta,
-      deltaDirection: 'up-good' as const,
+      title: 'Total Agent Cost',
+      value: formatCost(kpis?.total_agent_cost || 0),
       isLoading: kpisLoading,
+      tooltip: 'Total estimated cost across all agents in the selected period',
     },
     {
-      title: 'Avg Satisfaction Rate',
-      value: formatPercent(kpis?.current.avg_satisfaction_rate || 0),
-      delta: satisfactionDelta,
-      deltaDirection: 'up-good' as const,
+      title: 'Total Tokens',
+      value: formatTokens(Number(kpis?.total_tokens || 0)),
       isLoading: kpisLoading,
+      tooltip: 'Total tokens consumed by all agents in the selected period',
     },
     {
-      title: 'Most Used Agent',
-      value: kpis?.current.most_used_agent?.agent_name || 'N/A',
-      subtitle: kpis?.current.most_used_agent
-        ? `${kpis.current.most_used_agent.total_conversations} conversations`
-        : undefined,
+      title: 'Avg Users / Day',
+      value: (kpis?.avg_unique_users_per_day || 0).toFixed(1),
       isLoading: kpisLoading,
+      tooltip: 'Average number of unique users interacting with agents per day',
+    },
+    {
+      title: 'Avg Msgs / Agent',
+      value: Math.round(kpis?.avg_messages_per_agent || 0).toLocaleString(),
+      isLoading: kpisLoading,
+      tooltip: 'Average number of messages per active agent in the selected period',
+    },
+    {
+      title: 'Avg Response Time',
+      value: latency?.avg_latency_sec ? `${latency.avg_latency_sec}s` : '—',
+      subtitle: latency?.agents_with_latency ? `${latency.agents_with_latency} agents measured` : undefined,
+      isLoading: latencyLoading,
+      tooltip: 'Average end-to-end response latency across all agents with measured data.',
+    },
+    {
+      title: 'P95 Response Time',
+      value: latency?.p95_latency_sec ? `${latency.p95_latency_sec}s` : '—',
+      subtitle: 'Slowest 5% of responses',
+      isLoading: latencyLoading,
+      tooltip: '95th percentile response latency — the threshold below which 95% of responses fall.',
     },
   ];
 
-  // Top agents for charts
+  // Top agents for charts — sort by total_messages since total_conversations may be 0
   const topAgents = agents
     .filter((a) => !a.is_deleted)
+    .sort((a, b) => (b.total_messages || 0) - (a.total_messages || 0))
     .slice(0, 15);
+
+  // Metric config for usage chart
+  const metricConfig: Record<UsageMetric, { label: string; key: keyof AgentSummary; formatter: (v: number) => string }> = {
+    messages: { label: 'Messages', key: 'total_messages', formatter: (v) => v.toLocaleString() },
+    tokens: { label: 'Tokens', key: 'total_tokens', formatter: formatTokens },
+    cost: { label: 'Cost', key: 'total_est_cost_usd', formatter: formatCost },
+    unique_users: { label: 'Unique Users', key: 'total_unique_users', formatter: (v) => v.toLocaleString() },
+  };
+
+  // Re-sort topAgents by selected metric
+  const sortedAgents = useMemo(() => {
+    const cfg = metricConfig[usageMetric];
+    return [...agents]
+      .filter((a) => !a.is_deleted)
+      .sort((a, b) => (Number(b[cfg.key]) || 0) - (Number(a[cfg.key]) || 0))
+      .slice(0, 15);
+  }, [agents, usageMetric]);
 
   // Agent Usage Ranking Chart
   const usageChartOptions: EChartsOption = useMemo(() => {
-    const names = topAgents.map((a) => a.agent_name.slice(0, 30));
-    const conversations = topAgents.map((a) => a.total_conversations);
+    const cfg = metricConfig[usageMetric];
+    const names = sortedAgents.map((a) => a.agent_name.slice(0, 30));
+    const values = sortedAgents.map((a) => Number(a[cfg.key]) || 0);
 
     return {
       tooltip: {
         trigger: 'axis',
         axisPointer: { type: 'shadow' },
+        formatter: (params: any) => {
+          const agent = sortedAgents[params[0].dataIndex];
+          if (!agent) return '';
+          return `${agent.agent_name}<br/>${cfg.label}: ${cfg.formatter(Number(agent[cfg.key]) || 0)}`;
+        },
       },
       grid: {
         left: '25%',
@@ -129,6 +162,11 @@ export default function AgentsPage() {
       },
       xAxis: {
         type: 'value',
+        axisLabel: usageMetric === 'cost'
+          ? { formatter: (v: number) => formatCost(v) }
+          : usageMetric === 'tokens'
+          ? { formatter: (v: number) => formatTokens(v) }
+          : {},
       },
       yAxis: {
         type: 'category',
@@ -137,12 +175,12 @@ export default function AgentsPage() {
       },
       series: [
         {
-          name: 'Conversations',
+          name: cfg.label,
           type: 'bar',
-          data: conversations.map((val, idx) => ({
+          data: values.map((val, idx) => ({
             value: val,
             itemStyle: {
-              color: topAgents[idx].agent_id === selectedAgentId
+              color: sortedAgents[idx].agent_id === selectedAgentId
                 ? CHART_COLORS[0]
                 : selectedAgentId
                 ? `${CHART_COLORS[0]}66`
@@ -152,109 +190,67 @@ export default function AgentsPage() {
         },
       ],
     };
-  }, [topAgents, selectedAgentId]);
+  }, [sortedAgents, selectedAgentId, usageMetric]);
 
-  // Satisfaction Rate Chart
-  const satisfactionChartOptions: EChartsOption = useMemo(() => {
-    const names = topAgents.map((a) => a.agent_name.slice(0, 30));
-    const rates = topAgents.map((a) => a.satisfaction_rate);
-    const avgRate = kpis?.current.avg_satisfaction_rate || 0;
+  // Activity metric config
+  const activityMetricConfig: Record<ActivityMetric, { label: string; perfKey: keyof AgentPerformance; formatter: (v: number) => string }> = {
+    messages: { label: 'Messages', perfKey: 'total_messages', formatter: (v) => v.toLocaleString() },
+    tokens: { label: 'Tokens', perfKey: 'total_tokens', formatter: formatTokens },
+    cost: { label: 'Cost', perfKey: 'est_cost_usd', formatter: formatCost },
+    unique_users: { label: 'Unique Users', perfKey: 'unique_users', formatter: (v) => v.toLocaleString() },
+  };
 
-    return {
-      tooltip: {
-        trigger: 'axis',
-        axisPointer: { type: 'shadow' },
-        formatter: (params: any) => {
-          const agent = topAgents[params[0].dataIndex];
-          return `${agent.agent_name}<br/>
-                  Satisfaction: ${agent.satisfaction_rate.toFixed(1)}%<br/>
-                  Positive: ${agent.total_positive_reactions}<br/>
-                  Negative: ${agent.total_negative_reactions}`;
-        },
-      },
-      grid: {
-        left: '25%',
-        right: '10%',
-        top: '3%',
-        bottom: '3%',
-        containLabel: true,
-      },
-      xAxis: {
-        type: 'value',
-        max: 100,
-        axisLabel: { formatter: '{value}%' },
-      },
-      yAxis: {
-        type: 'category',
-        data: names,
-        axisLabel: { fontSize: 11 },
-      },
-      series: [
-        {
-          name: 'Satisfaction',
-          type: 'bar',
-          data: rates.map((val) => ({
-            value: val,
-            itemStyle: {
-              color: val >= 80 ? '#16A34A' : val >= 60 ? '#D97706' : '#DC2626',
-            },
-          })),
-          markLine: {
-            data: [
-              {
-                xAxis: avgRate,
-                lineStyle: { color: '#6B7280', type: 'dashed' },
-                label: { formatter: 'Avg' },
-              },
-            ],
-          },
-        },
-      ],
-    };
-  }, [topAgents, kpis]);
-
-  // Agent Activity Over Time Chart
+  // Agent Activity Over Time Chart (configurable metric from performance data)
   const activityChartOptions: EChartsOption = useMemo(() => {
-    const dates = Array.from(new Set(performance.map((p) => p.date_day))).sort();
-    const top5Agents = topAgents.slice(0, 5);
-    
-    const agentsToShow = selectedAgentId
-      ? agents.filter((a) => a.agent_id === selectedAgentId)
-      : top5Agents;
+    if (performance.length === 0) return { title: { text: 'No activity data for this period', left: 'center', top: 'center', textStyle: { color: '#9CA3AF', fontSize: 14 } } };
 
-    const series = agentsToShow.map((agent, idx) => ({
-      name: agent.agent_name,
-      type: 'line' as const,
-      smooth: true,
-      data: dates.map((date) => {
-        const entry = performance.find(
-          (p) => p.date_day === date && p.agent_id === agent.agent_id
-        );
-        return entry ? entry.total_conversations : 0;
-      }),
-      lineStyle: {
-        width: agent.agent_id === selectedAgentId ? 3 : 2,
-        opacity: selectedAgentId && agent.agent_id !== selectedAgentId ? 0.3 : 1,
-      },
-      itemStyle: {
-        color: CHART_COLORS[idx % CHART_COLORS.length],
-      },
-    }));
+    const actCfg = activityMetricConfig[activityMetric];
+    const dates = Array.from(new Set(performance.map((p) => p.date_day))).sort();
+    // Get top 5 agents by selected metric in this period
+    const agentTotals = new Map<string, { name: string; total: number }>();
+    performance.forEach((p) => {
+      const cur = agentTotals.get(p.agent_id) || { name: p.agent_name, total: 0 };
+      cur.total += Number(p[actCfg.perfKey]) || 0;
+      agentTotals.set(p.agent_id, cur);
+    });
+    const top5Ids = Array.from(agentTotals.entries())
+      .sort((a, b) => b[1].total - a[1].total)
+      .slice(0, 5)
+      .map(([id]) => id);
+
+    const agentIdsToShow = selectedAgentId ? [selectedAgentId] : top5Ids;
+
+    const series = agentIdsToShow.map((agentId, idx) => {
+      const info = agentTotals.get(agentId);
+      return {
+        name: info?.name || agentId,
+        type: 'line' as const,
+        smooth: true,
+        data: dates.map((date) => {
+          const entry = performance.find(
+            (p) => p.date_day === date && p.agent_id === agentId
+          );
+          return entry ? Number(entry[actCfg.perfKey]) || 0 : 0;
+        }),
+        lineStyle: {
+          width: agentId === selectedAgentId ? 3 : 2,
+        },
+        itemStyle: {
+          color: CHART_COLORS[idx % CHART_COLORS.length],
+        },
+      };
+    });
 
     return {
       tooltip: {
         trigger: 'axis',
+        valueFormatter: (value: any) => actCfg.formatter(Number(value)),
       },
       legend: {
-        data: agentsToShow.map((a) => a.agent_name),
+        data: series.map((s) => s.name),
         top: 0,
       },
-      grid: {
-        left: '3%',
-        right: '4%',
-        bottom: '3%',
-        containLabel: true,
-      },
+      grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
       xAxis: {
         type: 'category',
         boundaryGap: false,
@@ -262,10 +258,15 @@ export default function AgentsPage() {
       },
       yAxis: {
         type: 'value',
+        axisLabel: activityMetric === 'cost'
+          ? { formatter: (v: number) => formatCost(v) }
+          : activityMetric === 'tokens'
+          ? { formatter: (v: number) => formatTokens(v) }
+          : {},
       },
       series,
     };
-  }, [performance, topAgents, selectedAgentId, agents]);
+  }, [performance, selectedAgentId, activityMetric]);
 
   // Cost per Agent Chart
   const costChartOptions: EChartsOption = useMemo(() => {
@@ -279,13 +280,14 @@ export default function AgentsPage() {
         axisPointer: { type: 'shadow' },
         formatter: (params: any) => {
           const agent = topAgents[params[0].dataIndex];
-          const costPerConv = agent.total_conversations > 0
-            ? agent.total_est_cost_usd / agent.total_conversations
+          const costPerMsg = agent.total_messages > 0
+            ? agent.total_est_cost_usd / agent.total_messages
             : 0;
           return `${agent.agent_name}<br/>
                   Cost: ${formatCost(agent.total_est_cost_usd)}<br/>
-                  Conversations: ${agent.total_conversations}<br/>
-                  Cost/Conv: ${formatCost(costPerConv)}`;
+                  Messages: ${agent.total_messages}<br/>
+                  Tokens: ${formatTokens(agent.total_tokens)}<br/>
+                  Cost/Msg: ${formatCost(costPerMsg)}`;
         },
       },
       grid: {
@@ -327,67 +329,23 @@ export default function AgentsPage() {
     };
   }, [topAgents]);
 
-  // Reactions Over Time Chart
-  const reactionsChartOptions: EChartsOption = useMemo(() => {
-    const filteredPerf = selectedAgentId
-      ? performance.filter((p) => p.agent_id === selectedAgentId)
-      : performance;
+  // Table date slicer state
+  const [tableFrom, setTableFrom] = useState(from);
+  const [tableTo, setTableTo] = useState(to);
 
-    const dates = Array.from(new Set(filteredPerf.map((p) => p.date_day))).sort();
-    
-    const positiveData = dates.map((date) => {
-      const dayData = filteredPerf.filter((p) => p.date_day === date);
-      return dayData.reduce((sum, p) => sum + p.reactions_positive, 0);
-    });
+  // Sync slicer bounds when main filter changes
+  useMemo(() => {
+    setTableFrom(from);
+    setTableTo(to);
+  }, [from, to]);
 
-    const negativeData = dates.map((date) => {
-      const dayData = filteredPerf.filter((p) => p.date_day === date);
-      return dayData.reduce((sum, p) => sum + p.reactions_negative, 0);
-    });
-
-    return {
-      tooltip: {
-        trigger: 'axis',
-        axisPointer: { type: 'cross' },
-      },
-      legend: {
-        data: ['Positive', 'Negative'],
-        top: 0,
-      },
-      grid: {
-        left: '3%',
-        right: '4%',
-        bottom: '3%',
-        containLabel: true,
-      },
-      xAxis: {
-        type: 'category',
-        boundaryGap: false,
-        data: dates.map(formatDateShort),
-      },
-      yAxis: {
-        type: 'value',
-      },
-      series: [
-        {
-          name: 'Positive',
-          type: 'line',
-          stack: 'total',
-          areaStyle: { opacity: 0.6 },
-          data: positiveData,
-          itemStyle: { color: '#16A34A' },
-        },
-        {
-          name: 'Negative',
-          type: 'line',
-          stack: 'total',
-          areaStyle: { opacity: 0.6 },
-          data: negativeData,
-          itemStyle: { color: '#DC2626' },
-        },
-      ],
-    };
-  }, [performance, selectedAgentId]);
+  // Fetch table data with slicer dates
+  const tableQueryParams = new URLSearchParams({ from: tableFrom, to: tableTo }).toString();
+  const { data: tableData, isLoading: tableLoading } = useSWR<ApiResponse<AgentSummary[]>>(
+    `/agents/summary?${tableQueryParams}`,
+    fetcher
+  );
+  const tableAgents = (tableData?.data || []).filter((a) => !a.is_deleted);
 
   // Table columns
   const columns: DataTableColumn<AgentSummary>[] = [
@@ -395,7 +353,7 @@ export default function AgentsPage() {
       key: 'agent_name',
       header: 'Agent Name',
       sortable: true,
-      width: '15%',
+      width: '20%',
     },
     {
       key: 'agent_type',
@@ -407,77 +365,47 @@ export default function AgentsPage() {
             value === 'cortex' ? 'success' :
             value === 'workflow' ? 'warning' : 'pending'
           }
-          label={String(value)}
+          label={String(value || 'unknown')}
         />
       ),
-      width: '8%',
-    },
-    {
-      key: 'owner_email',
-      header: 'Owner Email',
-      sortable: true,
-      width: '15%',
-    },
-    {
-      key: 'total_conversations',
-      header: 'Conversations',
-      sortable: true,
       width: '10%',
     },
     {
-      key: 'total_unique_users',
-      header: 'Unique Users',
+      key: 'total_messages',
+      header: 'Messages',
       sortable: true,
-      width: '10%',
-    },
-    {
-      key: 'avg_messages_per_conv',
-      header: 'Avg Msgs/Conv',
-      sortable: true,
-      render: (_value, row) => {
-        const avg = row.total_conversations > 0
-          ? row.total_messages / row.total_conversations
-          : 0;
-        return avg.toFixed(1);
-      },
-      width: '10%',
+      render: (value) => Number(value || 0).toLocaleString(),
+      width: '12%',
     },
     {
       key: 'total_tokens',
-      header: 'Total Tokens',
+      header: 'Tokens',
       sortable: true,
-      render: (value) => formatTokens(value as number),
-      width: '10%',
+      render: (value) => formatTokens(Number(value || 0)),
+      width: '14%',
     },
     {
       key: 'total_est_cost_usd',
       header: 'Total Cost',
       sortable: true,
       render: (value) => (
-        <span className="font-bold">{formatCost(value as number)}</span>
+        <span className="font-bold">{formatCost(Number(value || 0))}</span>
       ),
-      width: '10%',
+      width: '12%',
     },
     {
-      key: 'satisfaction_rate',
-      header: 'Satisfaction Rate',
+      key: 'total_unique_users',
+      header: 'Unique Users',
       sortable: true,
-      render: (value) => {
-        const rate = value as number;
-        const color = rate >= 80 ? 'bg-success' : rate >= 60 ? 'bg-warning' : 'bg-danger';
-        return (
-          <div className="flex items-center gap-2">
-            <div className="flex-1 bg-slate-200 rounded-full h-2">
-              <div
-                className={`${color} h-2 rounded-full`}
-                style={{ width: `${rate}%` }}
-              />
-            </div>
-            <span className="text-xs font-medium">{rate.toFixed(0)}%</span>
-          </div>
-        );
-      },
+      render: (value) => Number(value || 0).toLocaleString(),
       width: '12%',
+    },
+    {
+      key: 'last_interacted_at',
+      header: 'Last Active',
+      sortable: true,
+      render: (value) => value ? formatRelativeTime(value as string) : '—',
+      width: '14%',
     },
   ];
 
@@ -485,26 +413,36 @@ export default function AgentsPage() {
     <div className="p-8 space-y-6">
       <KpiRow kpis={kpiCards} />
 
-      {/* Agent Usage Ranking & Satisfaction Rate */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <ChartCard
-          title="Agent Usage Ranking"
-          subtitle={selectedAgentId ? "Click to clear filter" : "Click to filter"}
-          isLoading={summaryLoading}
-        >
-          <div onClick={() => setSelectedAgentId(null)}>
-            <BarChart options={usageChartOptions} height="320px" />
-          </div>
-        </ChartCard>
+      {/* Agent Usage Ranking — full width under filters */}
+      <ChartCard
+        title="Agent Usage Ranking"
+        subtitle={selectedAgentId ? "Click to clear filter" : "Click to filter"}
+        isLoading={summaryLoading}
+      >
+        <div className="flex gap-1 mb-3">
+          {(Object.keys(metricConfig) as UsageMetric[]).map((m) => (
+            <button
+              key={m}
+              onClick={() => setUsageMetric(m)}
+              className={`px-3 py-1 text-xs rounded-full transition-colors ${
+                usageMetric === m
+                  ? 'bg-primary text-white'
+                  : 'bg-slate-100 text-text-secondary hover:bg-slate-200'
+              }`}
+            >
+              {metricConfig[m].label}
+            </button>
+          ))}
+        </div>
+        <div onClick={() => setSelectedAgentId(null)}>
+          <BarChart options={usageChartOptions} height="320px" />
+        </div>
+      </ChartCard>
 
-        <ChartCard
-          title="Satisfaction Rate by Agent"
-          subtitle="Green: ≥80%, Amber: 60-79%, Red: <60%"
-          isLoading={summaryLoading}
-        >
-          <BarChart options={satisfactionChartOptions} height="320px" />
-        </ChartCard>
-      </div>
+      {/* Cost per Agent */}
+      <ChartCard title="Cost per Agent" subtitle="Top 15 agents" isLoading={summaryLoading}>
+        <BarChart options={costChartOptions} height="320px" />
+      </ChartCard>
 
       {/* Agent Activity Over Time */}
       <ChartCard
@@ -512,34 +450,74 @@ export default function AgentsPage() {
         subtitle={selectedAgentId ? `Showing: ${agents.find(a => a.agent_id === selectedAgentId)?.agent_name}` : "Top 5 agents"}
         isLoading={performanceLoading}
       >
+        <div className="flex gap-1 mb-3">
+          {(Object.keys(activityMetricConfig) as ActivityMetric[]).map((m) => (
+            <button
+              key={m}
+              onClick={() => setActivityMetric(m)}
+              className={`px-3 py-1 text-xs rounded-full transition-colors ${
+                activityMetric === m
+                  ? 'bg-primary text-white'
+                  : 'bg-slate-100 text-text-secondary hover:bg-slate-200'
+              }`}
+            >
+              {activityMetricConfig[m].label}
+            </button>
+          ))}
+        </div>
         <LineChart options={activityChartOptions} height="320px" />
       </ChartCard>
 
-      {/* Cost per Agent & Reactions Over Time */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <ChartCard title="Cost per Agent" subtitle="Top 15 agents" isLoading={summaryLoading}>
-          <BarChart options={costChartOptions} height="280px" />
-        </ChartCard>
+      {/* Agent Leaderboard */}
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-bold text-text-primary">Agent Leaderboard</h2>
+        </div>
 
-        <ChartCard
-          title="Reactions Over Time"
-          subtitle={selectedAgentId ? "Filtered to selected agent" : "All agents"}
-          isLoading={performanceLoading}
-        >
-          <AreaChart options={reactionsChartOptions} height="280px" />
-        </ChartCard>
+        {/* Date Range Slicer */}
+        <div className="bg-white rounded-lg shadow-sm p-4">
+          <div className="flex items-center gap-4 flex-wrap">
+            <span className="text-sm font-medium text-text-secondary">Date Range Slicer</span>
+            <div className="flex items-center gap-2">
+              <input
+                type="date"
+                value={tableFrom}
+                min={from}
+                max={tableTo}
+                onChange={(e) => setTableFrom(e.target.value)}
+                className="px-3 py-1.5 border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+              />
+              <span className="text-text-secondary">to</span>
+              <input
+                type="date"
+                value={tableTo}
+                min={tableFrom}
+                max={to}
+                onChange={(e) => setTableTo(e.target.value)}
+                className="px-3 py-1.5 border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+              />
+            </div>
+            {(tableFrom !== from || tableTo !== to) && (
+              <button
+                onClick={() => { setTableFrom(from); setTableTo(to); }}
+                className="px-3 py-1.5 text-xs bg-slate-100 text-text-secondary rounded-lg hover:bg-slate-200 transition-colors"
+              >
+                Reset
+              </button>
+            )}
+          </div>
+        </div>
+
+        <DataTable
+          columns={columns}
+          data={tableAgents}
+          searchable
+          searchKeys={['agent_name']}
+          exportFilename={`agent-leaderboard-${tableFrom}-${tableTo}.csv`}
+          isLoading={tableLoading}
+          onRowClick={(row) => setSelectedAgentId(row.agent_id)}
+        />
       </div>
-
-      {/* Agent Leaderboard Table */}
-      <DataTable
-        columns={columns}
-        data={agents.filter((a) => !a.is_deleted)}
-        searchable
-        searchKeys={['agent_name', 'owner_email']}
-        exportFilename={`agent-performance-${from}-${to}.csv`}
-        isLoading={summaryLoading}
-        onRowClick={(row) => setSelectedAgentId(row.agent_id)}
-      />
 
       {/* Agent Detail SlideOver */}
       <SlideOver
@@ -621,34 +599,26 @@ export default function AgentsPage() {
               />
             </div>
 
-            {/* Satisfaction trend */}
+            {/* Token Usage */}
             <div>
-              <h3 className="text-sm font-semibold mb-3">Satisfaction Trend</h3>
-              <AreaChart
+              <h3 className="text-sm font-semibold mb-3">Token Usage</h3>
+              <BarChart
                 options={{
                   tooltip: { trigger: 'axis' },
-                  legend: { data: ['Positive', 'Negative'], top: 0 },
                   xAxis: {
                     type: 'category',
                     data: agentDetail.daily_performance.map((d) => formatDateShort(d.date_day)),
                   },
-                  yAxis: { type: 'value' },
+                  yAxis: {
+                    type: 'value',
+                    axisLabel: { formatter: (v: number) => formatTokens(v) },
+                  },
                   series: [
                     {
-                      name: 'Positive',
-                      type: 'line',
-                      stack: 'reactions',
-                      areaStyle: { opacity: 0.6 },
-                      data: agentDetail.daily_performance.map((d) => d.reactions_positive),
-                      itemStyle: { color: '#16A34A' },
-                    },
-                    {
-                      name: 'Negative',
-                      type: 'line',
-                      stack: 'reactions',
-                      areaStyle: { opacity: 0.6 },
-                      data: agentDetail.daily_performance.map((d) => d.reactions_negative),
-                      itemStyle: { color: '#DC2626' },
+                      name: 'Tokens',
+                      type: 'bar',
+                      data: agentDetail.daily_performance.map((d) => d.total_tokens || 0),
+                      itemStyle: { color: CHART_COLORS[2] },
                     },
                   ],
                   grid: {

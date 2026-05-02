@@ -62,6 +62,7 @@ interface UserCostDetail {
 interface CostDetailRow {
   date: string;
   user_email: string;
+  agent_name: string | null;
   model: string;
   provider: string;
   requests: number;
@@ -639,6 +640,7 @@ export default async function costRoutes(fastify: FastifyInstance) {
           SELECT 
             date_day::text as date,
             user_email,
+            COALESCE(agent_name, 'Direct') as agent_name,
             model,
             provider,
             total_requests as requests,

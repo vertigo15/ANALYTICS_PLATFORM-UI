@@ -116,38 +116,57 @@ Paginated server-side: accept `?page&pageSize&status` filter.
 
 **KPI Row:** Total Documents · Success Rate · Avg Chunks/Doc · Currently Failing (red highlight if > 0)
 
-**Chart Row 1 — full width (height: 200px)**
-Processing Funnel (FunnelChart).
-Stages left to right: Uploaded → Processing → Processed, with Failed branching off.
-Use ECharts funnel chart type.
-Each stage shows count and % drop from previous.
-Failed stage always red.
+**Processing Step Bar — full width**
+Horizontal step bar (ProcessingStepBar component, pure CSS/Tailwind).
+Steps left to right: Uploaded → Processing → Processed, with Failed separated by divider.
+Each step shows count and % of total. Colour-coded: blue/amber/green/red.
+Fetches from `/documents/funnel`.
+
+**Chart Row 1 — full width**
+Documents by Time (StackedBarChart by content type).
+Measure toggle: Count · Size · Embeddings · Cost.
 
 **Chart Row 2 — two side by side (height: 280px)**
+
+Left — Content Type Breakdown (DonutChart):
+PDF vs Image vs Other. Tooltip shows count + success rate per type.
+Fetches from `/documents/content-type-breakdown`.
+
+Right — Document Size by Type (DonutChart):
+Total storage consumed per content type. Labels show formatted size.
+
+**Chart Row 3 — two side by side (height: 320px)**
+
+Left — Top Uploaders (BarChart horizontal):
+Y axis: user email (truncated). X axis: document count.
+Bar colour: green ≥90%, amber 70–89%, red <70% success rate.
+Right label shows exact success %. Tooltip shows full email + failed count.
+Fetches from `/documents/top-uploaders`.
+
+Right — Failure Correlations (BarChart horizontal):
+Failure rate by 3 dimensions: content_type, file_size bucket, parsing_technique.
+Colour: red ≥20%, amber 10–19%, green <10%. Right label shows doc count.
+Fetches from `/documents/failure-correlations`.
+
+**Chart Row 4 — two side by side (height: 280px)**
 
 Left — Daily Processing Volume (StackedBarChart):
 X axis: dates. One bar per day.
 Segments: Processed (green) · Failed (red) · Pending/Processing (grey).
-Shows volume + failure rate trend.
 
 Right — Success Rate by Technique (BarChart horizontal):
 Y axis: technique names.
 X axis: success rate %.
 Colour: green ≥ 90%, amber 70–89%, red < 70%.
 
-**Chart Row 3 — two side by side (height: 280px)**
+**Chart Row 5 — two side by side (height: 280px)**
 
-Left — Chunk Size Distribution (BoxPlotChart):
-One box per parsing technique.
-X axis: technique names. Y axis: word count per chunk.
-Shows whether chunks are appropriately sized.
-Derive from `mart_document_rag_health.avg_words_per_chunk` — use as a simplified bar since full box plot requires raw data.
-Build as a grouped BarChart showing min/avg/max word count per technique instead.
+Left — Chunk Size Distribution (BarChart):
+Avg words per chunk by technique.
 
 Right — Embedding Coverage (DonutChart):
 Two segments: With Embeddings (blue) · Without Embeddings (grey).
-Centre: coverage percentage.
-If < 100%, ring is amber.
+Centre: coverage percentage. If < 100%, ring is amber.
 
 **Table:** Document list. Columns: File Name · Type · Technique · Status (badge) · Size · Chunks · Words · Embeddings (✅/❌) · Owner · Uploaded.
 Filter tabs above table: All · Processed · Failed · Pending.

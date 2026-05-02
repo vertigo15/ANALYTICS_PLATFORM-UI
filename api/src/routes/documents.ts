@@ -30,6 +30,15 @@ interface DocumentByTechnique {
   avg_words_per_chunk: number;
 }
 
+interface DocumentByTypeDaily {
+  date: string;
+  content_type_group: string;
+  doc_count: number;
+  total_size_bytes: number;
+  total_embeddings: number;
+  est_cost_usd: number;
+}
+
 interface DocumentListItem {
   document_id: string;
   file_name: string;
@@ -42,6 +51,31 @@ interface DocumentListItem {
   has_embeddings: boolean;
   owner_email: string | null;
   document_created_at: string;
+}
+
+interface TopUploader {
+  email: string;
+  total_documents: number;
+  processed: number;
+  failed: number;
+  success_rate: number;
+}
+
+interface ContentTypeBreakdown {
+  content_type_group: string;
+  doc_count: number;
+  total_size_bytes: number;
+  processed: number;
+  failed: number;
+  success_rate: number;
+}
+
+interface FailureCorrelation {
+  dimension: string;
+  bucket: string;
+  total: number;
+  failed: number;
+  failure_rate: number;
 }
 
 interface DocumentListResponse {
@@ -84,17 +118,30 @@ export default async function documentsRoutes(fastify: FastifyInstance) {
             FROM gold.fact_document_processing
             WHERE status = 'FAILED'
               AND document_created_at >= $1 AND document_created_at <= $2
+          ),
+          rag_health AS (
+            SELECT
+              AVG(avg_words_per_chunk)::numeric              AS avg_words_per_chunk,
+              SUM(docs_with_embeddings)::integer             AS docs_with_embeddings,
+              AVG(embedding_coverage)::numeric               AS embedding_coverage
+            FROM gold.mart_document_rag_health
+            WHERE date_day >= $1::date AND date_day <= $2::date
           )
           SELECT
-            COALESCE(pd.total_docs, 0)::integer as total_documents,
-            CASE 
-              WHEN pd.total_docs > 0 THEN (pd.processed_docs::numeric / pd.total_docs::numeric * 100)
-              ELSE 0 
-            END::numeric as success_rate,
-            COALESCE(pd.avg_chunks, 0)::numeric as avg_chunks_per_doc,
-            COALESCE(cf.failing_count, 0)::integer as currently_failing
+            COALESCE(pd.total_docs, 0)::integer             AS total_documents,
+            CASE
+              WHEN pd.total_docs > 0
+              THEN (pd.processed_docs::numeric / pd.total_docs::numeric * 100)
+              ELSE 0
+            END::numeric                                     AS success_rate,
+            COALESCE(pd.avg_chunks, 0)::numeric             AS avg_chunks_per_doc,
+            COALESCE(cf.failing_count, 0)::integer          AS currently_failing,
+            COALESCE(rh.avg_words_per_chunk, 0)::numeric    AS avg_words_per_chunk,
+            COALESCE(rh.docs_with_embeddings, 0)::integer   AS docs_with_embeddings,
+            COALESCE(rh.embedding_coverage, 0)::numeric     AS embedding_coverage
           FROM period_docs pd
           CROSS JOIN currently_failing cf
+          CROSS JOIN rag_health rh
         `;
 
         const { rows, cached } = await queryWithCache<DocumentKPIs>(
@@ -111,6 +158,9 @@ export default async function documentsRoutes(fastify: FastifyInstance) {
               success_rate: 0,
               avg_chunks_per_doc: 0,
               currently_failing: 0,
+              avg_words_per_chunk: 0,
+              docs_with_embeddings: 0,
+              embedding_coverage: 0,
             },
             meta: {
               from,
@@ -285,6 +335,284 @@ export default async function documentsRoutes(fastify: FastifyInstance) {
         fastify.log.error(error);
         reply.code(500);
         throw new Error('Failed to fetch documents by technique');
+      }
+    }
+  );
+
+  // GET /api/v1/documents/by-type-daily
+  fastify.get<{ Querystring: QueryParams; Reply: ApiResponse<DocumentByTypeDaily[]> }>(
+    '/by-type-daily',
+    async (request, reply) => {
+      const { from, to } = request.query;
+
+      if (!from || !to) {
+        reply.code(400);
+        throw new Error('from and to query parameters are required');
+      }
+
+      const cacheKey = `documents:by-type-daily:${from}:${to}`;
+
+      try {
+        const sql = `
+          SELECT
+            DATE(fp.document_created_at)::text as date,
+            COALESCE(d.content_type_group, 'Unknown') as content_type_group,
+            COUNT(DISTINCT fp.document_id)::integer as doc_count,
+            COALESCE(SUM(fp.file_size_bytes), 0)::bigint as total_size_bytes,
+            COALESCE(SUM(CASE WHEN fp.has_embeddings THEN fp.total_chunks ELSE 0 END), 0)::integer as total_embeddings,
+            0::numeric as est_cost_usd
+          FROM gold.fact_document_processing fp
+          LEFT JOIN gold.dim_documents d ON fp.document_id = d.document_id
+          WHERE fp.document_created_at >= $1 AND fp.document_created_at <= $2
+          GROUP BY DATE(fp.document_created_at), COALESCE(d.content_type_group, 'Unknown')
+          ORDER BY date, content_type_group
+        `;
+
+        const { rows, cached } = await queryWithCache<DocumentByTypeDaily>(
+          cacheKey,
+          cacheTTL,
+          sql,
+          [from, to]
+        );
+
+        return {
+          data: rows,
+          meta: {
+            from,
+            to,
+            generated_at: new Date().toISOString(),
+            cached,
+          },
+        };
+      } catch (error) {
+        fastify.log.error(error);
+        reply.code(500);
+        throw new Error('Failed to fetch documents by type daily');
+      }
+    }
+  );
+
+  // GET /api/v1/documents/top-uploaders
+  fastify.get<{ Querystring: QueryParams; Reply: ApiResponse<TopUploader[]> }>(
+    '/top-uploaders',
+    async (request, reply) => {
+      const { from, to } = request.query;
+
+      if (!from || !to) {
+        reply.code(400);
+        throw new Error('from and to query parameters are required');
+      }
+
+      const cacheKey = `documents:top-uploaders:${from}:${to}`;
+
+      try {
+        const sql = `
+          SELECT
+            COALESCE(u.email, 'Unknown') as email,
+            COUNT(DISTINCT fp.document_id)::integer as total_documents,
+            COUNT(DISTINCT CASE WHEN fp.status = 'PROCESSED' THEN fp.document_id END)::integer as processed,
+            COUNT(DISTINCT CASE WHEN fp.status = 'FAILED' THEN fp.document_id END)::integer as failed,
+            CASE
+              WHEN COUNT(DISTINCT fp.document_id) > 0
+              THEN (COUNT(DISTINCT CASE WHEN fp.status = 'PROCESSED' THEN fp.document_id END)::numeric / COUNT(DISTINCT fp.document_id)::numeric * 100)
+              ELSE 0
+            END::numeric as success_rate
+          FROM gold.fact_document_processing fp
+          LEFT JOIN gold.dim_documents d ON fp.document_id = d.document_id
+          LEFT JOIN gold.dim_users u ON d.owner_user_id = u.user_id
+          WHERE fp.document_created_at >= $1 AND fp.document_created_at <= $2
+          GROUP BY u.email
+          ORDER BY total_documents DESC
+          LIMIT 15
+        `;
+
+        const { rows, cached } = await queryWithCache<TopUploader>(
+          cacheKey,
+          cacheTTL,
+          sql,
+          [from, to]
+        );
+
+        return {
+          data: rows,
+          meta: {
+            from,
+            to,
+            generated_at: new Date().toISOString(),
+            cached,
+          },
+        };
+      } catch (error) {
+        fastify.log.error(error);
+        reply.code(500);
+        throw new Error('Failed to fetch top uploaders');
+      }
+    }
+  );
+
+  // GET /api/v1/documents/content-type-breakdown
+  fastify.get<{ Querystring: QueryParams; Reply: ApiResponse<ContentTypeBreakdown[]> }>(
+    '/content-type-breakdown',
+    async (request, reply) => {
+      const { from, to } = request.query;
+
+      if (!from || !to) {
+        reply.code(400);
+        throw new Error('from and to query parameters are required');
+      }
+
+      const cacheKey = `documents:content-type-breakdown:${from}:${to}`;
+
+      try {
+        const sql = `
+          SELECT
+            COALESCE(d.content_type_group, 'Other') as content_type_group,
+            COUNT(DISTINCT fp.document_id)::integer as doc_count,
+            COALESCE(SUM(fp.file_size_bytes), 0)::bigint as total_size_bytes,
+            COUNT(DISTINCT CASE WHEN fp.status = 'PROCESSED' THEN fp.document_id END)::integer as processed,
+            COUNT(DISTINCT CASE WHEN fp.status = 'FAILED' THEN fp.document_id END)::integer as failed,
+            CASE
+              WHEN COUNT(DISTINCT fp.document_id) > 0
+              THEN (COUNT(DISTINCT CASE WHEN fp.status = 'PROCESSED' THEN fp.document_id END)::numeric / COUNT(DISTINCT fp.document_id)::numeric * 100)
+              ELSE 0
+            END::numeric as success_rate
+          FROM gold.fact_document_processing fp
+          LEFT JOIN gold.dim_documents d ON fp.document_id = d.document_id
+          WHERE fp.document_created_at >= $1 AND fp.document_created_at <= $2
+          GROUP BY COALESCE(d.content_type_group, 'Other')
+          ORDER BY doc_count DESC
+        `;
+
+        const { rows, cached } = await queryWithCache<ContentTypeBreakdown>(
+          cacheKey,
+          cacheTTL,
+          sql,
+          [from, to]
+        );
+
+        return {
+          data: rows,
+          meta: {
+            from,
+            to,
+            generated_at: new Date().toISOString(),
+            cached,
+          },
+        };
+      } catch (error) {
+        fastify.log.error(error);
+        reply.code(500);
+        throw new Error('Failed to fetch content type breakdown');
+      }
+    }
+  );
+
+  // GET /api/v1/documents/failure-correlations
+  fastify.get<{ Querystring: QueryParams; Reply: ApiResponse<FailureCorrelation[]> }>(
+    '/failure-correlations',
+    async (request, reply) => {
+      const { from, to } = request.query;
+
+      if (!from || !to) {
+        reply.code(400);
+        throw new Error('from and to query parameters are required');
+      }
+
+      const cacheKey = `documents:failure-correlations:${from}:${to}`;
+
+      try {
+        const sql = `
+          WITH base AS (
+            SELECT
+              fp.document_id,
+              fp.status,
+              fp.file_size_bytes,
+              fp.parsing_technique,
+              COALESCE(d.content_type_group, 'Other') as content_type_group
+            FROM gold.fact_document_processing fp
+            LEFT JOIN gold.dim_documents d ON fp.document_id = d.document_id
+            WHERE fp.document_created_at >= $1 AND fp.document_created_at <= $2
+          ),
+          by_content_type AS (
+            SELECT
+              'content_type' as dimension,
+              content_type_group as bucket,
+              COUNT(DISTINCT document_id)::integer as total,
+              COUNT(DISTINCT CASE WHEN status = 'FAILED' THEN document_id END)::integer as failed,
+              CASE
+                WHEN COUNT(DISTINCT document_id) > 0
+                THEN (COUNT(DISTINCT CASE WHEN status = 'FAILED' THEN document_id END)::numeric / COUNT(DISTINCT document_id)::numeric * 100)
+                ELSE 0
+              END::numeric as failure_rate
+            FROM base
+            GROUP BY content_type_group
+          ),
+          by_size AS (
+            SELECT
+              'file_size' as dimension,
+              CASE
+                WHEN file_size_bytes < 102400 THEN '0-100 KB'
+                WHEN file_size_bytes < 1048576 THEN '100 KB-1 MB'
+                WHEN file_size_bytes < 10485760 THEN '1-10 MB'
+                ELSE '10 MB+'
+              END as bucket,
+              COUNT(DISTINCT document_id)::integer as total,
+              COUNT(DISTINCT CASE WHEN status = 'FAILED' THEN document_id END)::integer as failed,
+              CASE
+                WHEN COUNT(DISTINCT document_id) > 0
+                THEN (COUNT(DISTINCT CASE WHEN status = 'FAILED' THEN document_id END)::numeric / COUNT(DISTINCT document_id)::numeric * 100)
+                ELSE 0
+              END::numeric as failure_rate
+            FROM base
+            GROUP BY CASE
+              WHEN file_size_bytes < 102400 THEN '0-100 KB'
+              WHEN file_size_bytes < 1048576 THEN '100 KB-1 MB'
+              WHEN file_size_bytes < 10485760 THEN '1-10 MB'
+              ELSE '10 MB+'
+            END
+          ),
+          by_technique AS (
+            SELECT
+              'parsing_technique' as dimension,
+              COALESCE(parsing_technique, 'Unknown') as bucket,
+              COUNT(DISTINCT document_id)::integer as total,
+              COUNT(DISTINCT CASE WHEN status = 'FAILED' THEN document_id END)::integer as failed,
+              CASE
+                WHEN COUNT(DISTINCT document_id) > 0
+                THEN (COUNT(DISTINCT CASE WHEN status = 'FAILED' THEN document_id END)::numeric / COUNT(DISTINCT document_id)::numeric * 100)
+                ELSE 0
+              END::numeric as failure_rate
+            FROM base
+            GROUP BY parsing_technique
+          )
+          SELECT * FROM by_content_type
+          UNION ALL
+          SELECT * FROM by_size
+          UNION ALL
+          SELECT * FROM by_technique
+          ORDER BY dimension, failure_rate DESC
+        `;
+
+        const { rows, cached } = await queryWithCache<FailureCorrelation>(
+          cacheKey,
+          cacheTTL,
+          sql,
+          [from, to]
+        );
+
+        return {
+          data: rows,
+          meta: {
+            from,
+            to,
+            generated_at: new Date().toISOString(),
+            cached,
+          },
+        };
+      } catch (error) {
+        fastify.log.error(error);
+        reply.code(500);
+        throw new Error('Failed to fetch failure correlations');
       }
     }
   );
