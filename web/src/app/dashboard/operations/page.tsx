@@ -70,27 +70,34 @@ export default function OperationsPage() {
   const hourly = hourlyData?.data || [];
   const events = eventsData?.data || [];
   const triggerKpis = triggersData?.data;
+  const asOfSubtitle = kpis?.as_of_hour
+    ? `${kpis.is_stale ? 'Stale · ' : ''}as of ${formatRelativeTime(kpis.as_of_hour)}`
+    : 'No hourly data available';
 
   // KPI cards
   const kpiCards = [
     {
       title: 'Messages Last Hour',
       value: kpis?.messages_last_hour.toLocaleString() || '0',
+      subtitle: asOfSubtitle,
       isLoading: kpisLoading,
     },
     {
       title: 'Cost Last Hour',
       value: formatCost(kpis?.cost_last_hour || 0),
+      subtitle: asOfSubtitle,
       isLoading: kpisLoading,
     },
     {
-      title: 'Doc Failure Rate (24h)',
+      title: 'Document Cohort Failure (24h)',
       value: kpis ? `${(kpis.doc_failure_rate_24h * 100).toFixed(1)}%` : '0%',
+      subtitle: `${asOfSubtitle} · current outcomes for uploads in the window`,
       isLoading: kpisLoading,
     },
     {
       title: 'Active Users Last Hour',
       value: kpis?.active_users_last_hour.toString() || '0',
+      subtitle: asOfSubtitle,
       isLoading: kpisLoading,
     },
   ];

@@ -1,4 +1,5 @@
 import axios, { AxiosError } from 'axios';
+import { useFiltersStore } from '@/store/filters';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
@@ -25,7 +26,7 @@ export class ApiError extends Error {
 // correct environment.
 apiClient.interceptors.request.use((config) => {
   if (typeof window !== 'undefined') {
-    const env = localStorage.getItem('analytics-env') || 'dev';
+    const env = useFiltersStore.getState().environment;
     config.headers['x-analytics-env'] = env;
   }
   return config;

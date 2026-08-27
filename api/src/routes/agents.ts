@@ -66,18 +66,31 @@ interface AgentDetail extends AgentSummary {
 }
 
 export default async function agentsRoutes(fastify: FastifyInstance) {
-  fastify.get<{ Reply: ApiResponse<Agent[]> }>('/list', async (_request, reply) => {
+  fastify.get<{ Querystring: QueryParams; Reply: ApiResponse<Agent[]> }>('/list', async (request, reply) => {
+    const { organization_id } = request.query;
     const cacheTTL = 3300; // 55 minutes
-    const cacheKey = 'agents:list';
+    const cacheKey = `agents:list:${organization_id || 'all'}`;
+    const params = organization_id ? [organization_id] : [];
+    const sql = organization_id
+      ? `SELECT DISTINCT c.agent_id, COALESCE(c.agent_name, a.agent_name) AS agent_name
+         FROM gold.mart_llm_cost_by_user_model_day c
+         LEFT JOIN gold.dim_agents a ON c.agent_id = a.agent_id
+         WHERE c.agent_id IS NOT NULL
+           AND c.user_id IN (
+             SELECT user_id FROM gold.dim_users WHERE organization_id = $1
+           )
+         ORDER BY agent_name`
+      : `SELECT agent_id, agent_name
+         FROM gold.dim_agents
+         WHERE is_deleted = false
+         ORDER BY agent_name`;
 
     try {
       const { rows, cached } = await queryWithCache<Agent>(
         cacheKey,
         cacheTTL,
-        `SELECT agent_id, agent_name
-         FROM gold.dim_agents
-         WHERE is_deleted = false
-         ORDER BY agent_name`
+        sql,
+        params
       );
 
       return {
@@ -281,43 +294,62 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
 
       try {
         const kpiParams: (string | null)[] = [from, to];
-        let orgFilter = '';
+        let costOrgFilter = '';
+        let messageOrgFilter = '';
         if (organization_id) {
-          orgFilter = `AND user_id IN (SELECT user_id FROM gold.dim_users WHERE organization_id = $3)`;
+          costOrgFilter = `AND user_id IN (
+            SELECT user_id FROM gold.dim_users WHERE organization_id = $3
+          )`;
+          messageOrgFilter = `AND user_id IN (
+            SELECT user_id FROM gold.dim_users WHERE organization_id = $3
+          )`;
           kpiParams.push(organization_id);
         }
 
-        // Derive KPIs from mart_llm_cost_by_user_model_day (date-filtered)
         const sql = `
-          WITH daily AS (
+          WITH cost_totals AS (
             SELECT
-              date_day,
-              agent_id,
-              COALESCE(SUM(total_requests), 0) as day_messages,
-              COALESCE(SUM(total_tokens), 0) as day_tokens,
-              COALESCE(SUM(est_cost_usd), 0) as day_cost,
-              COUNT(DISTINCT user_id) as day_unique_users
+              COALESCE(SUM(total_tokens), 0)::bigint AS total_tokens,
+              COALESCE(SUM(est_cost_usd), 0)::float AS total_agent_cost
             FROM gold.mart_llm_cost_by_user_model_day
             WHERE agent_id IS NOT NULL
-              AND date_day >= $1 AND date_day <= $2 ${orgFilter}
-            GROUP BY date_day, agent_id
+              AND date_day >= $1::date
+              AND date_day <= $2::date
+              ${costOrgFilter}
           ),
           daily_users AS (
-            SELECT date_day, SUM(day_unique_users) as total_unique_users
-            FROM daily
-            GROUP BY date_day
+            SELECT
+              DATE(message_created_at) AS date_day,
+              COUNT(DISTINCT user_id)::integer AS distinct_users
+            FROM gold.fact_messages
+            WHERE agent_id IS NOT NULL
+              AND message_created_at >= $1::timestamp
+              AND message_created_at < ($2::date + INTERVAL '1 day')
+              ${messageOrgFilter}
+            GROUP BY DATE(message_created_at)
+          ),
+          message_totals AS (
+            SELECT
+              COUNT(*)::bigint AS total_messages,
+              COUNT(DISTINCT agent_id)::integer AS active_agents
+            FROM gold.fact_messages
+            WHERE agent_id IS NOT NULL
+              AND message_created_at >= $1::timestamp
+              AND message_created_at < ($2::date + INTERVAL '1 day')
+              ${messageOrgFilter}
           )
           SELECT
-            COUNT(DISTINCT d.agent_id)::int as active_agents,
-            COALESCE(SUM(d.day_cost), 0)::float as total_agent_cost,
-            COALESCE(SUM(d.day_tokens), 0)::bigint as total_tokens,
-            COALESCE((SELECT AVG(total_unique_users) FROM daily_users), 0)::float as avg_unique_users_per_day,
+            mt.active_agents,
+            ct.total_agent_cost,
+            ct.total_tokens,
+            COALESCE((SELECT AVG(distinct_users) FROM daily_users), 0)::float as avg_unique_users_per_day,
             CASE
-              WHEN COUNT(DISTINCT d.agent_id) > 0
-              THEN (COALESCE(SUM(d.day_messages), 0)::float / COUNT(DISTINCT d.agent_id))
+              WHEN mt.active_agents > 0
+              THEN mt.total_messages::float / mt.active_agents
               ELSE 0
             END as avg_messages_per_agent
-          FROM daily d
+          FROM cost_totals ct
+          CROSS JOIN message_totals mt
         `;
 
         const { rows, cached } = await queryWithCache<AgentKPIs>(
@@ -359,45 +391,76 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
     Reply: ApiResponse<AgentDetail>;
   }>('/:agentId', async (request, reply) => {
     const { agentId } = request.params;
-    const { from, to } = request.query;
+    const { from, to, organization_id } = request.query;
 
     if (!from || !to) {
       reply.code(400);
       throw new Error('from and to query parameters are required');
     }
 
-    const cacheKey = `agents:detail:${agentId}:${from}:${to}`;
+    const cacheKey = `agents:detail:${agentId}:${from}:${to}:${organization_id || 'all'}`;
     const cacheTTL = 3300;
+    const summaryParams = organization_id
+      ? [from, to, agentId, organization_id]
+      : [from, to, agentId];
+    const detailParams = organization_id
+      ? [agentId, from, to, organization_id]
+      : [agentId, from, to];
+    const summaryOrgFilter = organization_id
+      ? `AND c.user_id IN (
+          SELECT user_id FROM gold.dim_users WHERE organization_id = $4
+        )`
+      : '';
+    const detailOrgFilter = organization_id
+      ? `AND user_id IN (
+          SELECT user_id FROM gold.dim_users WHERE organization_id = $4
+        )`
+      : '';
+    const conversationOrgFilter = organization_id
+      ? `AND m.user_id IN (
+          SELECT user_id FROM gold.dim_users WHERE organization_id = $4
+        )`
+      : '';
 
     try {
-      // Get agent summary
+      // Derive the summary from organization-filterable activity rather than a global mart.
       const summaryResult = await queryWithCache<AgentSummary>(
         cacheKey + ':summary',
         cacheTTL,
-        `SELECT 
-          agent_id,
-          agent_name,
-          agent_type,
-          owner_email,
-          total_unique_users,
-          total_conversations,
-          total_messages,
-          total_tokens,
-          total_est_cost_usd,
-          COALESCE(
-            CASE 
-              WHEN (total_positive_reactions + total_negative_reactions) > 0
-              THEN (total_positive_reactions::float / (total_positive_reactions + total_negative_reactions)) * 100
-              ELSE 0
-            END, 0
-          ) as satisfaction_rate,
-          total_positive_reactions,
-          total_negative_reactions,
-          last_interacted_at::text,
-          is_deleted
-         FROM gold.mart_agent_summary
-         WHERE agent_id = $1`,
-        [agentId]
+        `WITH filtered AS (
+           SELECT
+             c.agent_id,
+             MAX(c.agent_name) AS agent_name,
+             COUNT(DISTINCT c.user_id)::int AS total_unique_users,
+             COALESCE(SUM(c.total_requests), 0)::int AS total_messages,
+             COALESCE(SUM(c.total_tokens), 0)::bigint AS total_tokens,
+             COALESCE(SUM(c.est_cost_usd), 0)::float AS total_est_cost_usd,
+             MAX(c.date_day)::text AS last_interacted_at
+           FROM gold.mart_llm_cost_by_user_model_day c
+           WHERE c.date_day >= $1::date
+             AND c.date_day <= $2::date
+             AND c.agent_id = $3
+             ${summaryOrgFilter}
+           GROUP BY c.agent_id
+         )
+         SELECT
+           f.agent_id,
+           COALESCE(f.agent_name, a.agent_name) AS agent_name,
+           COALESCE(a.agent_type, 'unknown') AS agent_type,
+           COALESCE(a.owner_email, '') AS owner_email,
+           f.total_unique_users,
+           0::int AS total_conversations,
+           f.total_messages,
+           f.total_tokens,
+           f.total_est_cost_usd,
+           0::float AS satisfaction_rate,
+           0::int AS total_positive_reactions,
+           0::int AS total_negative_reactions,
+           f.last_interacted_at,
+           COALESCE(a.is_deleted, false) AS is_deleted
+         FROM filtered f
+         LEFT JOIN gold.dim_agents a ON f.agent_id = a.agent_id`,
+        summaryParams
       );
 
       if (summaryResult.rows.length === 0) {
@@ -407,7 +470,7 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
 
       const summary = summaryResult.rows[0];
 
-      // Get daily performance
+      // Get daily performance from the same organization-filterable source.
       const performanceResult = await queryWithCache<AgentPerformance>(
         cacheKey + ':performance',
         cacheTTL,
@@ -415,17 +478,22 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
           date_day::text,
           agent_id,
           agent_name,
-          unique_users,
-          total_conversations,
-          total_messages,
-          avg_messages_per_conv,
-          est_cost_usd,
-          reactions_positive,
-          reactions_negative
-         FROM gold.mart_agent_performance_daily
-         WHERE agent_id = $1 AND date_day >= $2 AND date_day <= $3
+          COUNT(DISTINCT user_id)::int AS unique_users,
+          0::int AS total_conversations,
+          COALESCE(SUM(total_requests), 0)::int AS total_messages,
+          0::float AS avg_messages_per_conv,
+          COALESCE(SUM(total_tokens), 0)::bigint AS total_tokens,
+          COALESCE(SUM(est_cost_usd), 0)::float AS est_cost_usd,
+          0::int AS reactions_positive,
+          0::int AS reactions_negative
+         FROM gold.mart_llm_cost_by_user_model_day
+         WHERE agent_id = $1
+           AND date_day >= $2::date
+           AND date_day <= $3::date
+           ${detailOrgFilter}
+         GROUP BY date_day, agent_id, agent_name
          ORDER BY date_day`,
-        [agentId, from, to]
+        detailParams
       );
 
       // Get recent conversations
@@ -445,17 +513,21 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
           MAX(m.message_created_at)::text as date,
           COALESCE(SUM(t.est_cost_usd), 0) as est_cost_usd
          FROM gold.fact_messages m
-         LEFT JOIN gold.dim_users u ON m.user_key = u.user_key
-         LEFT JOIN gold.fact_model_transactions t 
-           ON m.conversation_id = t.transaction_id::text
-         WHERE m.agent_key IN (
-           SELECT agent_key FROM gold.dim_agents WHERE agent_id = $1
-         )
-         AND m.message_created_at >= $2 AND m.message_created_at <= $3
+         LEFT JOIN gold.dim_users u ON m.user_id = u.user_id
+         LEFT JOIN (
+           SELECT message_id, SUM(est_cost_usd) AS est_cost_usd
+           FROM gold.fact_model_transactions
+           WHERE message_id IS NOT NULL
+           GROUP BY message_id
+         ) t ON t.message_id = m.message_id
+         WHERE m.agent_id = $1
+         AND m.message_created_at >= $2::timestamp
+         AND m.message_created_at < ($3::date + INTERVAL '1 day')
+         ${conversationOrgFilter}
          GROUP BY m.conversation_id
          ORDER BY date DESC
          LIMIT 20`,
-        [agentId, from, to + 'T23:59:59']
+        detailParams
       );
 
       const detail: AgentDetail = {
@@ -479,29 +551,63 @@ export default async function agentsRoutes(fastify: FastifyInstance) {
       throw new Error('Failed to fetch agent detail');
     }
   });
-  // GET /api/v1/agents/latency — response time KPIs from mart_agent_performance_daily
+  // GET /api/v1/agents/latency — response time KPIs from raw fact rows
   fastify.get<{ Querystring: QueryParams }>('/latency', async (request, reply) => {
-    const { from, to } = request.query;
+    const { from, to, organization_id } = request.query;
     if (!from || !to) { reply.code(400); throw new Error('from and to required'); }
 
-    const cacheKey = `agents:latency:${from}:${to}`;
+    const cacheKey = `agents:latency:${from}:${to}:${organization_id || 'all'}`;
     const cacheTTL = 3300;
     try {
+      const params: (string | null)[] = [from, to];
+      let messageOrgFilter = '';
+      let transactionOrgFilter = '';
+      if (organization_id) {
+        messageOrgFilter = `AND fm.user_id IN (
+          SELECT user_id FROM gold.dim_users WHERE organization_id = $3
+        )`;
+        transactionOrgFilter = `AND fmt.user_id IN (
+          SELECT user_id FROM gold.dim_users WHERE organization_id = $3
+        )`;
+        params.push(organization_id);
+      }
+
       const { rows, cached } = await queryWithCache<AgentLatencyKPIs>(
         cacheKey, cacheTTL,
-        `SELECT
-          ROUND(AVG(avg_response_latency_seconds)::numeric, 2)::float    AS avg_latency_sec,
-          ROUND(
-            PERCENTILE_CONT(0.95) WITHIN GROUP
-              (ORDER BY p95_response_latency_seconds)::numeric, 2
-          )::float                                                        AS p95_latency_sec,
-          ROUND(AVG(avg_ttft_ms)::numeric, 0)::float                     AS avg_ttft_ms,
-          ROUND(AVG(avg_output_tokens_per_second)::numeric, 2)::float    AS avg_tokens_per_sec,
-          COUNT(DISTINCT agent_id)::int                                  AS agents_with_latency
-         FROM gold.mart_agent_performance_daily
-         WHERE date_day >= $1 AND date_day <= $2
-           AND avg_response_latency_seconds IS NOT NULL`,
-        [from, to]
+        `WITH message_stats AS (
+           SELECT
+             AVG(fm.response_latency_seconds)::numeric AS avg_latency_sec,
+             PERCENTILE_CONT(0.95) WITHIN GROUP (
+               ORDER BY fm.response_latency_seconds
+             )::numeric AS p95_latency_sec,
+             COUNT(DISTINCT fm.agent_id)::integer AS agents_with_latency
+           FROM gold.fact_messages fm
+           WHERE fm.agent_id IS NOT NULL
+             AND fm.response_latency_seconds IS NOT NULL
+             AND fm.response_latency_seconds >= 0
+             AND fm.message_created_at >= $1::timestamp
+             AND fm.message_created_at < ($2::date + INTERVAL '1 day')
+             ${messageOrgFilter}
+         ),
+         transaction_stats AS (
+           SELECT
+             AVG(NULLIF(fmt.ttft_ms, 0))::numeric AS avg_ttft_ms,
+             AVG(NULLIF(fmt.output_tokens_per_second, 0))::numeric AS avg_tokens_per_sec
+           FROM gold.fact_model_transactions fmt
+           WHERE fmt.agent_id IS NOT NULL
+             AND fmt.transacted_at >= $1::timestamp
+             AND fmt.transacted_at < ($2::date + INTERVAL '1 day')
+             ${transactionOrgFilter}
+         )
+         SELECT
+           ROUND(COALESCE(ms.avg_latency_sec, 0), 2)::float AS avg_latency_sec,
+           ROUND(COALESCE(ms.p95_latency_sec, 0), 2)::float AS p95_latency_sec,
+           ROUND(ts.avg_ttft_ms, 0)::float AS avg_ttft_ms,
+           ROUND(ts.avg_tokens_per_sec, 2)::float AS avg_tokens_per_sec,
+           COALESCE(ms.agents_with_latency, 0)::int AS agents_with_latency
+         FROM message_stats ms
+         CROSS JOIN transaction_stats ts`,
+        params
       );
 
       const defaults: AgentLatencyKPIs = {

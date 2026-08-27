@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import { X, Trash2, ChevronDown, ChevronUp, Send, Loader2, GripVertical } from 'lucide-react';
 import { useAIStore } from '@/store/ai';
 import { useFiltersStore } from '@/store/filters';
+import { apiClient } from '@/lib/fetcher';
 import ChatMessage from './ChatMessage';
 import SuggestedQuestions from './SuggestedQuestions';
 
@@ -42,8 +43,8 @@ export default function AISidebar() {
   // Load default suggestions
   useEffect(() => {
     if (isAISidebarOpen && messages.length === 0) {
-      fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/ai/suggestions/${currentPage}`)
-        .then((res) => res.json())
+      apiClient.get(`/ai/suggestions/${currentPage}`)
+        .then((res) => res.data)
         .then((data) => setDefaultSuggestions(data.suggestions || []))
         .catch(() => setDefaultSuggestions([]));
     }
@@ -102,10 +103,7 @@ export default function AISidebar() {
     setIsLoading(true);
 
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/ai/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const response = await apiClient.post('/ai/chat', {
           message: messageText,
           page: currentPage,
           context: {
@@ -121,14 +119,9 @@ export default function AISidebar() {
             role: m.role,
             content: m.content,
           })),
-        }),
       });
 
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-
-      const data = await response.json();
+      const data = response.data;
 
       const assistantMessage: Message = {
         role: 'assistant',

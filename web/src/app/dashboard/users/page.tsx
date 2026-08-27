@@ -84,16 +84,11 @@ export default function UsersPage() {
     return labels;
   }, [to]);
 
-  // Compute average DAU for the filtered period from daily data
-  const avgDau = useMemo(() => {
-    if (daily.length === 0) return 0;
-    const total = daily.reduce((sum, d) => sum + Number(d.dau), 0);
-    return Math.round(total / daily.length);
-  }, [daily]);
+  const avgDau = Number(kpis?.current.avg_dau || 0);
 
   // Calculate deltas
   const dauDelta = kpis
-    ? ((kpis.current.dau - kpis.previous.dau) / (kpis.previous.dau || 1)) * 100
+    ? ((kpis.current.avg_dau - kpis.previous.avg_dau) / (kpis.previous.avg_dau || 1)) * 100
     : 0;
 
   const wauDelta = kpis
@@ -131,12 +126,12 @@ export default function UsersPage() {
   const kpiCards = [
     {
       title: 'Avg DAU',
-      value: avgDau.toLocaleString() || '0',
-      previousValue: kpis?.previous.dau.toString(),
+      value: Math.round(avgDau).toLocaleString() || '0',
+      previousValue: kpis ? Math.round(kpis.previous.avg_dau).toLocaleString() : undefined,
       delta: dauDelta,
       deltaDirection: 'up-good' as const,
       isLoading: kpisLoading || dailyLoading,
-      tooltip: 'Average Daily Active Users - Average number of unique users per day across the filtered period. Calculated as: sum of daily DAU ÷ number of days with data.',
+      tooltip: 'Average Daily Active Users across days with activity in the selected period. The displayed delta compares this same average with the previous equal-length period.',
       sparklineData: kpis?.dau_sparkline?.map(n => Number(n)) || [],
       sparklineLabels: sparklineDateLabels,
     },
@@ -147,7 +142,7 @@ export default function UsersPage() {
       delta: wauDelta,
       deltaDirection: 'up-good' as const,
       isLoading: kpisLoading,
-      tooltip: 'Weekly Active Users - Unique users active in the last 7 days',
+      tooltip: 'Distinct users who sent a message in the rolling 7-day window ending on the selected “to” date, independent of the selected range start.',
       sparklineData: kpis?.wau_sparkline?.map(n => Number(n)) || [],
       sparklineLabels: sparklineDateLabels,
     },
@@ -158,7 +153,7 @@ export default function UsersPage() {
       delta: mauDelta,
       deltaDirection: 'up-good' as const,
       isLoading: kpisLoading,
-      tooltip: 'Monthly Active Users - Unique users active in the last 30 days',
+      tooltip: 'Distinct users who sent a message in the rolling 30-day window ending on the selected “to” date, independent of the selected range start.',
     },
     {
       title: 'New Signups',
@@ -879,7 +874,9 @@ export default function UsersPage() {
         {
           title: 'Total Active Shares',
           value: sharingData?.data?.kpis?.total_active_shares?.toString() ?? '—',
-          subtitle: `${sharingData?.data?.kpis?.unique_sharers ?? 0} sharers · ${sharingData?.data?.kpis?.unique_recipients ?? 0} recipients`,
+          subtitle: organizationId
+            ? 'Unavailable for organisation scope'
+            : undefined,
           isLoading: sharingLoading,
           tooltip: 'Total active share relationships across all resource types.',
         },
@@ -919,7 +916,7 @@ export default function UsersPage() {
 
         return (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <ChartCard title="Active Shares Over Time" subtitle="Stacked by resource type" isLoading={sharingLoading}>
+            <ChartCard title="Active Share Cohorts" subtitle="Still-active relationships grouped by grant date" isLoading={sharingLoading}>
               <BarChart options={sharingTrendOptions} height="260px" />
             </ChartCard>
 

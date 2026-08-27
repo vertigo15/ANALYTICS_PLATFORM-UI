@@ -8,6 +8,9 @@
 
 param(
     [Parameter(Mandatory=$false)]
+    [string]$SubscriptionId = "c4289eb9-2fb6-48b7-9a75-1251ebba3992",
+
+    [Parameter(Mandatory=$false)]
     [string]$ResourceGroup = "jeen-rg-dev-weu",
     
     [Parameter(Mandatory=$false)]
@@ -38,7 +41,7 @@ Write-Host ""
 
 # Check if logged in to Azure
 Write-Host "Checking Azure login..." -ForegroundColor Yellow
-$account = az account show 2>$null | ConvertFrom-Json
+$account = az account show --subscription $SubscriptionId 2>$null | ConvertFrom-Json
 if (-not $account) {
     Write-Host "Not logged in to Azure. Please run 'az login' first." -ForegroundColor Red
     exit 1
@@ -49,7 +52,7 @@ Write-Host ""
 
 # Login to ACR
 Write-Host "Logging in to Azure Container Registry..." -ForegroundColor Yellow
-az acr login --name $AcrName
+az acr login --name $AcrName --subscription $SubscriptionId
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Failed to login to ACR" -ForegroundColor Red
     exit 1
@@ -79,7 +82,29 @@ Write-Host ""
 # Build and push Web image
 Write-Host "Building Web Docker image..." -ForegroundColor Yellow
 $webImage = "$AcrName.azurecr.io/jeen-analytics-web:$ImageTag"
-docker build -t $webImage -f web/Dockerfile ./web
+$apiFqdn = az containerapp show `
+    --subscription $SubscriptionId `
+    --name jeen-analytics-api `
+    --resource-group $ResourceGroup `
+    --query properties.configuration.ingress.fqdn `
+    --output tsv 2>$null
+
+if (-not $apiFqdn) {
+    $environmentDomain = az containerapp env show `
+        --subscription $SubscriptionId `
+        --name $Environment `
+        --resource-group $ResourceGroup `
+        --query properties.defaultDomain `
+        --output tsv
+    if ($LASTEXITCODE -ne 0 -or -not $environmentDomain) {
+        Write-Host "Failed to resolve the API FQDN for the web build" -ForegroundColor Red
+        exit 1
+    }
+    $apiFqdn = "jeen-analytics-api.$environmentDomain"
+}
+
+$apiUrl = "https://$apiFqdn"
+docker build --build-arg "NEXT_PUBLIC_API_URL=$apiUrl" -t $webImage -f web/Dockerfile ./web
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Failed to build Web image" -ForegroundColor Red
     exit 1
@@ -108,6 +133,7 @@ $openAiKeyPlain = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
 )
 
 az deployment group create `
+    --subscription $SubscriptionId `
     --name $deploymentName `
     --resource-group $ResourceGroup `
     --template-file azure/container-apps.bicep `
@@ -128,6 +154,7 @@ Write-Host ""
 # Get the URLs
 Write-Host "Getting application URLs..." -ForegroundColor Yellow
 $deployment = az deployment group show `
+    --subscription $SubscriptionId `
     --name $deploymentName `
     --resource-group $ResourceGroup `
     --query properties.outputs `

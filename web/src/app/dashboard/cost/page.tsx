@@ -106,18 +106,9 @@ export default function CostPage() {
         (summary.previous.est_cost_usd / (summary.previous.total_tokens / 1000))) * 100
     : 0;
 
-  // Calculate average cost per user
-  const avgCostPerUser = topUsers.length > 0
-    ? (summary?.current.est_cost_usd || 0) / topUsers.length
-    : 0;
-
   // Calculate cost efficiency metrics
   const avgCostPerRequest = summary && summary.current.total_requests > 0
     ? summary.current.est_cost_usd / summary.current.total_requests
-    : 0;
-
-  const costPerUserDay = topUsers.length > 0 && summary
-    ? summary.current.est_cost_usd / topUsers.length / 30 // Approximate 30-day period
     : 0;
 
   // KPI cards with icons
@@ -146,9 +137,9 @@ export default function CostPage() {
     },
     {
       title: 'Average Cost per User',
-      value: formatCost(avgCostPerUser),
-      subtitle: `${topUsers.length} active users`,
-      isLoading: summaryLoading || topUsersLoading,
+      value: formatCost(summary?.current.avg_cost_per_user || 0),
+      subtitle: `${summary?.current.active_users || 0} active users`,
+      isLoading: summaryLoading,
       icon: '👤',
       tooltip: 'Total cost divided by the number of distinct users who made at least one request in the period.',
     },
@@ -181,11 +172,11 @@ export default function CostPage() {
     },
     {
       title: 'Cost per User-Day',
-      value: formatCost(costPerUserDay),
-      subtitle: 'Daily average per user',
-      isLoading: summaryLoading || topUsersLoading,
+      value: formatCost(summary?.current.cost_per_active_user_day || 0),
+      subtitle: `${summary?.current.active_user_days || 0} active user-days`,
+      isLoading: summaryLoading,
       icon: '📅',
-      tooltip: 'Estimated daily cost per active user, calculated as total cost ÷ active users ÷ 30 days.',
+      tooltip: 'Total cost divided by the exact number of distinct active user-date pairs in the selected period.',
     },
   ];
 

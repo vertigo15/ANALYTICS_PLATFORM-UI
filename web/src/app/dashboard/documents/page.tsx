@@ -11,6 +11,8 @@ import type {
   DocumentKPIs,
   DocumentFunnel,
   DocumentByTypeDaily,
+  DocumentLoadAnalysis,
+  DocumentStageAnalysis,
   DailyDocument,
   DocumentByTechnique,
   DocumentListResponse,
@@ -27,27 +29,60 @@ import BarChart from '@/components/charts/BarChart';
 import DonutChart from '@/components/charts/DonutChart';
 import DataTable, { DataTableColumn } from '@/components/dashboard/DataTable';
 import StatusBadge from '@/components/dashboard/StatusBadge';
+import DocumentWaitAnalysis from '@/components/dashboard/DocumentWaitAnalysis';
 import type { EChartsOption } from 'echarts';
 
 type DocMeasure = 'count' | 'size' | 'embeddings' | 'cost';
 
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${Math.round(bytes)} B`;
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds >= 3600) return `${(seconds / 3600).toFixed(1)}h`;
+  if (seconds >= 60) return `${(seconds / 60).toFixed(1)}m`;
+  return `${seconds.toFixed(seconds >= 10 ? 0 : 1)}s`;
+}
+
 export default function DocumentsPage() {
-  const { from, to } = useFiltersStore();
+  const { from, to, organizationId } = useFiltersStore();
   const [activeTab, setActiveTab] = useState<'all' | 'PROCESSED' | 'FAILED' | 'PENDING'>('all');
   const [page, setPage] = useState(1);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
   const [docMeasure, setDocMeasure] = useState<DocMeasure>('count');
 
-  const queryParams = new URLSearchParams({ from, to }).toString();
+  const queryParams = new URLSearchParams({
+    from,
+    to,
+    ...(organizationId && { organization_id: organizationId }),
+  }).toString();
   const listParams = new URLSearchParams({
     page: page.toString(),
     pageSize: '50',
     ...(activeTab !== 'all' && { status: activeTab }),
+    ...(organizationId && { organization_id: organizationId }),
   }).toString();
 
   // Fetch data
   const { data: kpisData, isLoading: kpisLoading } = useSWR<ApiResponse<DocumentKPIs>>(
     `/documents/kpis?${queryParams}`,
+    fetcher
+  );
+
+  const { data: loadAnalysisData, isLoading: loadAnalysisLoading } = useSWR<ApiResponse<DocumentLoadAnalysis>>(
+    `/documents/load-analysis?${queryParams}`,
+    fetcher
+  );
+
+  const {
+    data: stageAnalysisData,
+    error: stageAnalysisError,
+    isLoading: stageAnalysisLoading,
+  } = useSWR<ApiResponse<DocumentStageAnalysis>>(
+    `/documents/stage-analysis?${queryParams}`,
     fetcher
   );
 
@@ -72,7 +107,7 @@ export default function DocumentsPage() {
   );
 
   const { data: funnelData, isLoading: funnelLoading } = useSWR<ApiResponse<DocumentFunnel[]>>(
-    '/documents/funnel',
+    `/documents/funnel?${queryParams}`,
     fetcher
   );
 
@@ -101,6 +136,11 @@ export default function DocumentsPage() {
   const topUploaders = topUploadersData?.data || [];
   const contentTypes = contentTypeData?.data || [];
   const correlations = correlationsData?.data || [];
+  const loadSummary = loadAnalysisData?.data.summary;
+  const loadDaily = useMemo(
+    () => loadAnalysisData?.data.daily || [],
+    [loadAnalysisData?.data.daily]
+  );
 
   // KPI cards
   const kpiCards = [
@@ -114,40 +154,204 @@ export default function DocumentsPage() {
       title: 'Success Rate',
       value: kpis ? `${Number(kpis.success_rate).toFixed(1)}%` : '0%',
       isLoading: kpisLoading,
-      tooltip: 'Percentage of documents successfully processed (status = PROCESSED).',
+      tooltip: 'Successful terminal outcomes ÷ (successful + failed terminal outcomes). Success is active_processing_status COMPLETED or READY; failure includes document, processing, or storage-upload failure.',
     },
     {
       title: 'Avg Chunks / Doc',
       value: kpis ? Number(kpis.avg_chunks_per_doc).toFixed(1) : '0',
       isLoading: kpisLoading,
-      tooltip: 'Average number of text chunks generated per successfully processed document.',
+      tooltip: 'Average total_chunks across documents whose active_processing_status is COMPLETED or READY.',
     },
     {
       title: 'Currently Failing',
       value: kpis?.currently_failing.toString() || '0',
       subtitle: kpis && kpis.currently_failing > 0 ? 'Requires attention' : undefined,
       isLoading: kpisLoading,
-      tooltip: 'Documents with status FAILED in the selected period.',
+      tooltip: 'Documents with a failed document, processing, or storage-upload outcome in the selected period.',
     },
     {
       title: 'Avg Words / Chunk',
       value: kpis ? Number(kpis.avg_words_per_chunk).toFixed(0) : '0',
       isLoading: kpisLoading,
-      tooltip: 'Average word count per chunk across all parsed documents. Lower values may indicate over-chunking.',
+      tooltip: 'Total words ÷ total chunks across successful documents, weighted by each document’s chunk count.',
     },
     {
       title: 'Docs with Embeddings',
       value: kpis?.docs_with_embeddings.toString() || '0',
       isLoading: kpisLoading,
-      tooltip: 'Number of documents that have at least one embedding stored — ready for RAG retrieval.',
+      tooltip: 'Successful documents with has_embeddings = true, ready for RAG retrieval.',
     },
     {
       title: 'Embedding Coverage',
       value: kpis ? `${(Number(kpis.embedding_coverage) * 100).toFixed(1)}%` : '0%',
       isLoading: kpisLoading,
-      tooltip: 'Proportion of processed documents that have embeddings. Lower coverage means the RAG index is incomplete.',
+      tooltip: 'Successful documents with embeddings ÷ all successful documents. The API returns a 0–1 ratio displayed here as a percentage.',
     },
   ];
+
+  const loadKpiCards = [
+    {
+      title: 'Upload Volume',
+      value: Number(loadSummary?.total_documents || 0).toLocaleString(),
+      isLoading: loadAnalysisLoading,
+      tooltip: 'Distinct documents uploaded during the selected period.',
+    },
+    {
+      title: 'Data Loaded',
+      value: formatBytes(Number(loadSummary?.total_size_bytes || 0)),
+      isLoading: loadAnalysisLoading,
+      tooltip: 'Combined file size of all documents uploaded during the selected period.',
+    },
+    {
+      title: 'Avg File Size',
+      value: formatBytes(Number(loadSummary?.avg_file_size_bytes || 0)),
+      isLoading: loadAnalysisLoading,
+      tooltip: 'Average uploaded document size.',
+    },
+    {
+      title: 'Peak Upload Day',
+      value: loadSummary?.peak_day ? formatDateShort(loadSummary.peak_day) : 'No data',
+      subtitle: loadSummary?.peak_day
+        ? `${Number(loadSummary.peak_day_documents).toLocaleString()} documents`
+        : undefined,
+      isLoading: loadAnalysisLoading,
+      tooltip: 'Calendar day with the most document uploads in the selected period.',
+    },
+    {
+      title: 'Avg Upload Time',
+      value: formatDuration(Number(loadSummary?.avg_upload_duration_seconds || 0)),
+      subtitle: loadSummary
+        ? `P95 ${formatDuration(Number(loadSummary.p95_upload_duration_seconds || 0))}`
+        : undefined,
+      isLoading: loadAnalysisLoading,
+      tooltip: 'Time from the first upload attempt starting to its latest completed or failed terminal attempt.',
+    },
+    {
+      title: 'Avg Processing Time',
+      value: formatDuration(Number(loadSummary?.avg_processing_duration_seconds || 0)),
+      subtitle: loadSummary
+        ? `P95 ${formatDuration(Number(loadSummary.p95_processing_duration_seconds || 0))} · ${loadSummary.pending_documents} pending · ${loadSummary.failed_documents} failed`
+        : undefined,
+      isLoading: loadAnalysisLoading,
+      tooltip: 'Document processing duration. Pending and failed counts use mutually exclusive current outcomes.',
+    },
+  ];
+
+  const loadVolumeOptions: EChartsOption = useMemo(() => {
+    if (loadDaily.length === 0) {
+      return { title: { text: 'No load data for this period', left: 'center', top: 'center', textStyle: { color: '#9CA3AF', fontSize: 14 } } };
+    }
+
+    return {
+      tooltip: {
+        trigger: 'axis',
+        formatter: (params: any) => {
+          const points = Array.isArray(params) ? params : [params];
+          const date = points[0]?.axisValue ? formatDateShort(points[0].axisValue) : '';
+          const lines = points.map((point: any) => (
+            point.seriesName === 'Data Loaded'
+              ? `${point.marker}${point.seriesName}: ${formatBytes(Number(point.value) * 1024 ** 2)}`
+              : `${point.marker}${point.seriesName}: ${Number(point.value).toLocaleString()}`
+          ));
+          return [date, ...lines].join('<br/>');
+        },
+      },
+      legend: { data: ['Documents', 'Data Loaded'], top: 0 },
+      grid: { left: '3%', right: '5%', bottom: '3%', containLabel: true },
+      xAxis: {
+        type: 'category',
+        data: loadDaily.map((row) => formatDateShort(row.date)),
+      },
+      yAxis: [
+        { type: 'value', name: 'Documents', minInterval: 1 },
+        { type: 'value', name: 'MB', axisLabel: { formatter: '{value} MB' } },
+      ],
+      series: [
+        {
+          name: 'Documents',
+          type: 'bar',
+          data: loadDaily.map((row) => Number(row.documents)),
+          itemStyle: { color: CHART_COLORS[0] },
+        },
+        {
+          name: 'Data Loaded',
+          type: 'line',
+          yAxisIndex: 1,
+          smooth: true,
+          data: loadDaily.map((row) => Number(row.total_size_bytes) / 1024 ** 2),
+          itemStyle: { color: CHART_COLORS[3] },
+        },
+      ],
+    };
+  }, [loadDaily]);
+
+  const loadPerformanceOptions: EChartsOption = useMemo(() => {
+    if (loadDaily.length === 0) {
+      return { title: { text: 'No processing data for this period', left: 'center', top: 'center', textStyle: { color: '#9CA3AF', fontSize: 14 } } };
+    }
+
+    return {
+      tooltip: {
+        trigger: 'axis',
+        formatter: (params: any) => {
+          const points = Array.isArray(params) ? params : [params];
+          const date = points[0]?.axisValue ? formatDateShort(points[0].axisValue) : '';
+          const lines = points.map((point: any) => (
+            point.seriesName.includes('Time')
+              ? `${point.marker}${point.seriesName}: ${formatDuration(Number(point.value))}`
+              : `${point.marker}${point.seriesName}: ${Number(point.value).toLocaleString()}`
+          ));
+          return [date, ...lines].join('<br/>');
+        },
+      },
+      legend: { data: ['Avg Processing Time', 'Avg Upload Time', 'Pending', 'Failed'], top: 0 },
+      grid: { left: '3%', right: '5%', bottom: '3%', containLabel: true },
+      xAxis: {
+        type: 'category',
+        data: loadDaily.map((row) => formatDateShort(row.date)),
+      },
+      yAxis: [
+        {
+          type: 'value',
+          name: 'Duration',
+          axisLabel: { formatter: (value: number) => formatDuration(value) },
+        },
+        { type: 'value', name: 'Documents', minInterval: 1 },
+      ],
+      series: [
+        {
+          name: 'Avg Processing Time',
+          type: 'line',
+          smooth: true,
+          data: loadDaily.map((row) => Number(row.avg_processing_duration_seconds)),
+          itemStyle: { color: CHART_COLORS[0] },
+        },
+        {
+          name: 'Avg Upload Time',
+          type: 'line',
+          smooth: true,
+          data: loadDaily.map((row) => Number(row.avg_upload_duration_seconds)),
+          itemStyle: { color: CHART_COLORS[2] },
+        },
+        {
+          name: 'Pending',
+          type: 'bar',
+          stack: 'outcomes',
+          yAxisIndex: 1,
+          data: loadDaily.map((row) => Number(row.pending_documents)),
+          itemStyle: { color: '#D97706' },
+        },
+        {
+          name: 'Failed',
+          type: 'bar',
+          stack: 'outcomes',
+          yAxisIndex: 1,
+          data: loadDaily.map((row) => Number(row.failed_documents)),
+          itemStyle: { color: '#DC2626' },
+        },
+      ],
+    };
+  }, [loadDaily]);
 
   // Measure config for Documents by Time chart
   const docMeasureConfig: Record<DocMeasure, { label: string; key: keyof DocumentByTypeDaily; formatter: (v: number) => string }> = {
@@ -231,9 +435,8 @@ export default function DocumentsPage() {
     });
 
     const pendingData = dates.map((date) => {
-      const pending = daily.find((d) => d.date === date && d.status === 'PENDING_UPLOAD');
-      const processing = daily.find((d) => d.date === date && d.status === 'PROCESSING');
-      return (pending?.count || 0) + (processing?.count || 0);
+      const entry = daily.find((d) => d.date === date && d.status === 'PENDING');
+      return entry ? entry.count : 0;
     });
 
     return {
@@ -242,7 +445,7 @@ export default function DocumentsPage() {
         axisPointer: { type: 'shadow' },
       },
       legend: {
-        data: ['Processed', 'Failed', 'Pending/Processing'],
+        data: ['Successful', 'Failed', 'Pending/Processing'],
         top: 0,
       },
       grid: {
@@ -260,7 +463,7 @@ export default function DocumentsPage() {
       },
       series: [
         {
-          name: 'Processed',
+          name: 'Successful',
           type: 'bar',
           stack: 'total',
           data: processedData,
@@ -610,8 +813,9 @@ export default function DocumentsPage() {
 
   // Embedding Coverage Donut
   const embeddingCoverageOptions: EChartsOption = useMemo(() => {
-    const withEmbeddings = documents.filter((d) => d.has_embeddings).length;
-    const withoutEmbeddings = documents.filter((d) => !d.has_embeddings).length;
+    const withEmbeddings = Number(kpis?.docs_with_embeddings || 0);
+    const eligibleDocuments = Number(kpis?.embedding_eligible_documents || 0);
+    const withoutEmbeddings = Math.max(eligibleDocuments - withEmbeddings, 0);
     const total = withEmbeddings + withoutEmbeddings;
     const coverage = total > 0 ? (withEmbeddings / total) * 100 : 0;
 
@@ -674,7 +878,7 @@ export default function DocumentsPage() {
         },
       ],
     };
-  }, [documents]);
+  }, [kpis]);
 
   // Table columns
   const columns: DataTableColumn<DocumentListItem>[] = [
@@ -773,6 +977,40 @@ export default function DocumentsPage() {
   return (
     <div className="p-8 space-y-6">
       <KpiRow kpis={kpiCards} />
+
+      <section className="space-y-4">
+        <div>
+          <h2 className="text-xl font-semibold text-text-primary">Document Load Analysis</h2>
+          <p className="text-sm text-text-secondary mt-1">
+            Upload volume, data size, lifecycle duration, and outcome pressure for the selected period.
+          </p>
+        </div>
+        <KpiRow kpis={loadKpiCards} />
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+          <ChartCard
+            title="Upload Load Over Time"
+            subtitle="Daily document volume and total uploaded data"
+            infoTooltip="Bars show distinct uploaded documents. The line shows total file size uploaded each day."
+            isLoading={loadAnalysisLoading}
+          >
+            <BarChart options={loadVolumeOptions} height="320px" />
+          </ChartCard>
+          <ChartCard
+            title="Processing Performance"
+            subtitle="Daily average duration with pending and failed upload cohorts"
+            infoTooltip="Duration lines use available upload-attempt and document-processing lifecycle timestamps. Bars show each upload day's current pending and failed outcomes."
+            isLoading={loadAnalysisLoading}
+          >
+            <BarChart options={loadPerformanceOptions} height="320px" />
+          </ChartCard>
+        </div>
+      </section>
+
+      <DocumentWaitAnalysis
+        analysis={stageAnalysisData?.data}
+        isLoading={stageAnalysisLoading}
+        hasError={Boolean(stageAnalysisError)}
+      />
 
       {/* Processing Step Bar — full width */}
       <ProcessingStepBar data={funnel} isLoading={funnelLoading} />
@@ -873,8 +1111,8 @@ export default function DocumentsPage() {
 
         <ChartCard
           title="Embedding Coverage"
-          subtitle={`${documents.length} documents in view`}
-          isLoading={listLoading}
+          subtitle={`${kpis?.embedding_eligible_documents || 0} successful documents in selected period`}
+          isLoading={kpisLoading}
         >
           <DonutChart options={embeddingCoverageOptions} height="280px" />
         </ChartCard>

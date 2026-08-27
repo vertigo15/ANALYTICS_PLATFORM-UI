@@ -16,7 +16,8 @@ const RULES = `
 Rules:
 - Only generate SELECT SQL queries
 - Only use tables from the 'gold' schema
-- Always apply the active date filter (from/to) in WHERE clauses
+- Treat the UI date range as inclusive calendar dates but use half-open timestamp predicates: timestamp >= from::date AND timestamp < to::date + INTERVAL '1 day'
+- Always apply the active organization filter when one is provided
 - Return responses in JSON format with a 'type' field
 - Be concise and accurate
 - When generating SQL, ensure it's syntactically correct PostgreSQL
@@ -37,13 +38,14 @@ Available tables:
 - gold.mart_llm_cost_by_user_model_day: columns date_day(date), user_id(uuid), user_email(text), model(text), provider(text), est_cost_usd(numeric), total_tokens(bigint), total_requests(bigint), total_input_tokens(bigint), total_output_tokens(bigint), total_reasoning_tokens(bigint), agent_id(uuid), agent_name(text)
 - gold.mart_llm_cost_hourly: columns date_hour(timestamptz), model(text), provider(text), est_cost_usd(numeric), total_tokens(bigint), unique_users(bigint), unique_agents(bigint)
 - gold.dim_users: columns user_id(uuid), email(text), full_name(text), organization_id(uuid), is_deleted(boolean)
-- gold.fact_model_transactions: columns transaction_id(uuid), date_key(int), user_key(int), agent_key(int), model_key(int), provider(text), model(text), input_tokens(bigint), output_tokens(bigint), total_tokens(bigint), reasoning_tokens(bigint), est_cost_usd(numeric), transacted_at(timestamptz)
+- gold.fact_model_transactions: columns transaction_id(uuid), message_id(uuid), date_key(int), user_id(uuid), agent_id(uuid), model_key(int), provider(text), model(text), input_tokens(bigint), output_tokens(bigint), total_tokens(bigint), reasoning_tokens(bigint), est_cost_usd(numeric), transacted_at(timestamptz)
 `,
     agents: `
 Available tables:
 - gold.mart_agent_performance_daily: columns date_day(date), agent_id(uuid), agent_name(text), agent_type(text), owner_user_id(uuid), unique_users(int), total_conversations(int), total_messages(int), avg_messages_per_conv(numeric), total_input_tokens(bigint), total_output_tokens(bigint), est_cost_usd(numeric), tool_calls_count(int), reactions_positive(int), reactions_negative(int)
 - gold.mart_agent_summary: columns agent_id(uuid), agent_name(text), agent_type(text), owner_email(text), created_at(timestamptz), last_interacted_at(timestamptz), total_unique_users(int), total_conversations(int), total_messages(int), total_tokens(bigint), total_est_cost_usd(numeric), total_positive_reactions(int), total_negative_reactions(int), satisfaction_rate(numeric), is_deleted(boolean)
-- gold.dim_agents: columns agent_key(int), agent_id(uuid), agent_name(text), agent_type(text), owner_user_id(uuid), owner_email(text), is_public(boolean), is_active(boolean), model(text), agent_created_at(timestamptz), last_interacted_at(timestamptz), is_deleted(boolean)
+- gold.fact_messages: columns message_id(uuid), user_id(uuid), agent_id(uuid), conversation_id(uuid), role(text), has_tool_calls(boolean), reaction_type(text), response_latency_seconds(numeric), message_created_at(timestamptz)
+- gold.dim_agents: columns agent_id(uuid), agent_name(text), agent_type(text), owner_user_id(uuid), owner_email(text), is_public(boolean), is_active(boolean), is_prebuilt(boolean), is_draft(boolean), model(text), agent_created_at(timestamptz), last_interacted_at(timestamptz), is_deleted(boolean)
 `,
     users: `
 Available tables:
@@ -54,14 +56,14 @@ Available tables:
 `,
     documents: `
 Available tables:
-- gold.fact_document_processing: columns document_id(uuid), date_key(int), document_key(int), user_key(int), status(text), file_size_bytes(bigint), parsing_technique(text), total_chunks(int), total_words(int), has_embeddings(boolean), document_created_at(timestamptz)
+- gold.fact_document_processing: columns document_id(uuid), date_key(int), user_id(uuid), organization_id(uuid), status(text), active_processing_status(text), file_size_bytes(bigint), parsing_technique(text), total_chunks(int), total_words(int), has_embeddings(boolean), document_created_at(timestamptz)
 - gold.mart_document_rag_health: columns date_day(date), parsing_technique(text), uploaded(int), processed(int), failed(int), success_rate(numeric), avg_chunks_per_doc(numeric), avg_words_per_chunk(numeric), docs_with_embeddings(int), embedding_coverage(numeric)
-- gold.dim_documents: columns document_key(int), document_id(uuid), file_name(text), content_type_group(text), file_size_bytes(bigint), parsing_technique(text), owner_user_id(uuid)
+- gold.dim_documents: columns document_id(uuid), file_name(text), content_type_group(text), file_size_bytes(bigint), parsing_technique(text), owner_user_id(uuid)
 `,
     operations: `
 Available tables:
 - gold.mart_operational_hourly: columns date_hour(timestamptz), new_conversations(int), new_messages(int), user_messages(int), assistant_messages(int), messages_with_tool_calls(int), total_tokens(bigint), total_cost_usd(numeric), new_documents(int), failed_documents(int), doc_failure_rate(numeric), new_users(int), active_users(int), unique_agents_used(int), avg_iteration_count(numeric)
-- gold.fact_messages: columns message_id(uuid), date_key(int), user_key(int), agent_key(int), conversation_id(uuid), role(text), has_tool_calls(boolean), iteration_count(int), reaction_type(text), message_created_at(timestamptz), date_hour(timestamptz)
+- gold.fact_messages: columns message_id(uuid), date_key(int), user_id(uuid), agent_id(uuid), conversation_id(uuid), role(text), has_tool_calls(boolean), iteration_count(int), reaction_type(text), response_latency_seconds(numeric), message_created_at(timestamptz), date_hour(timestamptz)
 `,
   };
 
@@ -70,10 +72,10 @@ Available tables:
 
 function getPageKpis(page: string): string[] {
   const pageKpis: Record<string, string[]> = {
-    cost: ['est_cost_usd', 'total_tokens', 'cost_per_1k_tokens'],
-    agents: ['satisfaction_rate', 'active_agents', 'avg_messages_per_conv'],
+    cost: ['est_cost_usd', 'total_tokens', 'cost_per_1k_tokens', 'avg_cost_per_user', 'cost_per_active_user_day'],
+    agents: ['satisfaction_rate', 'active_agents', 'avg_messages_per_conv', 'avg_messages_per_agent', 'avg_agent_response_time', 'p95_agent_response_time'],
     users: ['dau', 'wau', 'mau', 'new_users'],
-    documents: ['success_rate', 'avg_chunks_per_doc', 'embedding_coverage'],
+    documents: ['success_rate', 'avg_chunks_per_doc', 'avg_words_per_chunk', 'embedding_coverage'],
     operations: ['messages_last_hour', 'cost_last_hour', 'doc_failure_rate', 'active_users_last_hour'],
   };
 
@@ -126,8 +128,9 @@ When answering questions:
 1. If the user asks HOW a KPI is calculated, explain the formula without running SQL
 2. If the user asks for specific DATA values, generate and return SQL
 3. Always apply the active date filter (${filters.from} to ${filters.to}) in your SQL WHERE clauses
-4. For data questions, return JSON: { "type": "sql", "sql": "SELECT ..." }
-5. For KPI explanations, return JSON: { "type": "kpi_explanation" }
-6. For general conversation, reply in plain text (do NOT wrap in JSON)
+4. If an Organization ID is active, apply it through gold.dim_users.organization_id
+5. For data questions, return JSON: { "type": "sql", "sql": "SELECT ..." }
+6. For KPI explanations, return JSON: { "type": "kpi_explanation" }
+7. For general conversation, reply in plain text (do NOT wrap in JSON)
 `;
 }

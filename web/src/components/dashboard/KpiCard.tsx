@@ -118,6 +118,11 @@ export default function KpiCard({
             {subtitle} ({previousValue})
           </span>
         )}
+        {!previousValue && subtitle !== 'vs last period' && (
+          <span className="text-xs text-text-secondary">
+            {subtitle}
+          </span>
+        )}
       </div>
     </div>
   );

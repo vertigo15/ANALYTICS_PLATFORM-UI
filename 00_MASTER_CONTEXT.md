@@ -129,7 +129,7 @@ All in root `.env`:
 
 ```
 # Analytics DB (read-only access — bi_readonly role)
-ANALYTICS_DB_HOST=jeen-dev-db.postgres.database.azure.com
+ANALYTICS_DB_HOST=jeen-dev-db-weu.postgres.database.azure.com
 ANALYTICS_DB_PORT=5432
 ANALYTICS_DB_NAME=analytics_db
 ANALYTICS_DB_USER=bi_readonly

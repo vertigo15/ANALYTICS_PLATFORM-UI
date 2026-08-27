@@ -86,7 +86,7 @@ resource apiContainerApp 'Microsoft.App/containerApps@2024-02-02-preview' = {
           env: [
             {
               name: 'ANALYTICS_DB_HOST'
-              value: 'jeen-dev-db.postgres.database.azure.com'
+              value: 'jeen-dev-db-weu.postgres.database.azure.com'
             }
             {
               name: 'ANALYTICS_DB_PORT'

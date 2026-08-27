@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { useFiltersStore } from '@/store/filters';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
@@ -16,7 +17,7 @@ const apiClient = axios.create({
 // replica-safe, no restart needed.
 apiClient.interceptors.request.use((config) => {
   if (typeof window !== 'undefined') {
-    const env = localStorage.getItem('analytics-env') || 'dev';
+    const env = useFiltersStore.getState().environment;
     config.headers['x-analytics-env'] = env;
   }
   return config;
@@ -55,6 +56,7 @@ export interface FreshnessData {
 export interface HealthResponse {
   status: string;
   db: string;
+  env: string;
   timestamp: string;
 }
 
@@ -95,10 +97,17 @@ export interface TopUser {
   top_model: string;
 }
 
-export interface PeriodSummary {
+export interface CostTotals {
   est_cost_usd: number;
   total_tokens: number;
   total_requests: number;
+}
+
+export interface PeriodSummary extends CostTotals {
+  active_users: number;
+  active_user_days: number;
+  avg_cost_per_user: number;
+  cost_per_active_user_day: number;
 }
 
 export interface CostSummary {
@@ -112,7 +121,7 @@ export interface UserCostDetail {
   user_id: string;
   user_email: string;
   organization_id: string | null;
-  summary: PeriodSummary;
+  summary: CostTotals;
   by_model: { model: string; est_cost_usd: number; total_tokens: number }[];
   daily: { date: string; est_cost_usd: number; total_tokens: number }[];
   recent_activity: {
@@ -195,8 +204,8 @@ export interface SharingKPIs {
   total_active_shares: number;
   total_granted: number;
   total_revoked: number;
-  unique_sharers: number;
-  unique_recipients: number;
+  unique_sharers: number | null;
+  unique_recipients: number | null;
 }
 
 export interface SharingTrend {
@@ -235,6 +244,7 @@ export interface AgentDetail extends AgentSummary {
 export interface UserKPIs {
   current: {
     dau: number;
+    avg_dau: number;
     wau: number;
     mau: number;
     new_users: number;
@@ -244,6 +254,7 @@ export interface UserKPIs {
   };
   previous: {
     dau: number;
+    avg_dau: number;
     wau: number;
     mau: number;
     new_users: number;
@@ -324,6 +335,7 @@ export interface DocumentKPIs {
   currently_failing: number;
   avg_words_per_chunk: number;
   docs_with_embeddings: number;
+  embedding_eligible_documents: number;
   embedding_coverage: number;
 }
 
@@ -355,6 +367,81 @@ export interface DocumentByTypeDaily {
   total_size_bytes: number;
   total_embeddings: number;
   est_cost_usd: number;
+}
+
+export interface DocumentLoadSummary {
+  total_documents: number;
+  total_size_bytes: number;
+  avg_file_size_bytes: number;
+  avg_upload_duration_seconds: number;
+  p50_upload_duration_seconds: number;
+  p95_upload_duration_seconds: number;
+  avg_processing_duration_seconds: number;
+  p50_processing_duration_seconds: number;
+  p95_processing_duration_seconds: number;
+  processed_documents: number;
+  pending_documents: number;
+  failed_documents: number;
+  pending_with_completed_upload: number;
+  pending_without_processing_job: number;
+  pending_over_7d: number;
+  failed_upload_documents: number;
+  avg_recorded_wait_seconds: number;
+  p50_recorded_wait_seconds: number;
+  p95_recorded_wait_seconds: number;
+  peak_day: string | null;
+  peak_day_documents: number;
+}
+
+export interface DocumentLoadDaily {
+  date: string;
+  documents: number;
+  total_size_bytes: number;
+  avg_upload_duration_seconds: number;
+  avg_processing_duration_seconds: number;
+  processed_documents: number;
+  pending_documents: number;
+  failed_documents: number;
+}
+
+export interface DocumentLoadAnalysis {
+  summary: DocumentLoadSummary;
+  daily: DocumentLoadDaily[];
+}
+
+export interface DocumentStageMetric {
+  stage_order: number;
+  stage_key: string;
+  stage_name: string;
+  eligible_documents: number;
+  succeeded_documents: number;
+  failed_documents: number;
+  pending_documents: number;
+  success_rate: number;
+  avg_seconds: number;
+  p50_seconds: number;
+  p95_seconds: number;
+  timing_definition: string;
+  timing_is_estimate: boolean;
+}
+
+export interface DocumentStageAnalysis {
+  summary: {
+    uploaded_documents: number;
+    ready_documents: number;
+    incomplete_documents: number;
+    end_to_end_success_rate: number;
+    avg_end_to_end_seconds: number;
+    p50_end_to_end_seconds: number;
+    p95_end_to_end_seconds: number;
+  };
+  stages: DocumentStageMetric[];
+  telemetry: {
+    upload_data_through: string | null;
+    processing_data_through: string | null;
+    end_to_end_sample_size: number;
+    chunk_timing_is_estimate: boolean;
+  };
 }
 
 export interface DocumentListItem extends Record<string, unknown> {
@@ -421,6 +508,8 @@ export interface OperationsKPIs {
   cost_last_hour: number;
   doc_failure_rate_24h: number;
   active_users_last_hour: number;
+  as_of_hour: string | null;
+  is_stale: boolean;
 }
 
 export interface HealthIndicator {
