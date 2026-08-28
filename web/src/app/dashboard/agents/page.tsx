@@ -91,16 +91,16 @@ export default function AgentsPage() {
       tooltip: 'Total tokens consumed by all agents in the selected period',
     },
     {
-      title: 'Avg Users / Day',
+      title: 'Avg Distinct Users / Day',
       value: (kpis?.avg_unique_users_per_day || 0).toFixed(1),
       isLoading: kpisLoading,
-      tooltip: 'Average number of unique users interacting with agents per day',
+      tooltip: 'Average daily count of distinct users across all agents. A user who uses multiple agents on one day is counted once.',
     },
     {
-      title: 'Avg Msgs / Agent',
+      title: 'Avg Messages / Active Agent',
       value: Math.round(kpis?.avg_messages_per_agent || 0).toLocaleString(),
       isLoading: kpisLoading,
-      tooltip: 'Average number of messages per active agent in the selected period',
+      tooltip: 'Message rows from fact_messages divided by distinct active agents in the selected period.',
     },
     {
       title: 'Avg Response Time',
@@ -110,11 +110,11 @@ export default function AgentsPage() {
       tooltip: 'Average end-to-end response latency across all agents with measured data.',
     },
     {
-      title: 'P95 Response Time',
+      title: 'P95 Raw Response Time',
       value: latency?.p95_latency_sec ? `${latency.p95_latency_sec}s` : '—',
       subtitle: 'Slowest 5% of responses',
       isLoading: latencyLoading,
-      tooltip: '95th percentile response latency — the threshold below which 95% of responses fall.',
+      tooltip: '95th percentile measured directly from non-negative response_latency_seconds values in fact_messages.',
     },
   ];
 
@@ -344,7 +344,11 @@ export default function AgentsPage() {
   }, [from, to]);
 
   // Fetch table data with slicer dates
-  const tableQueryParams = new URLSearchParams({ from: tableFrom, to: tableTo }).toString();
+  const tableQueryParams = new URLSearchParams({
+    from: tableFrom,
+    to: tableTo,
+    ...(organizationId ? { organization_id: organizationId } : {}),
+  }).toString();
   const { data: tableData, isLoading: tableLoading } = useSWR<ApiResponse<AgentSummary[]>>(
     `/agents/summary?${tableQueryParams}`,
     fetcher

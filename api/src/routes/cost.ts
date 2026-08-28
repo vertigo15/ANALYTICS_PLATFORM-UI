@@ -28,10 +28,17 @@ interface TopUser {
   top_model: string;
 }
 
-interface PeriodSummary {
+interface CostTotals {
   est_cost_usd: number;
   total_tokens: number;
   total_requests: number;
+}
+
+interface PeriodSummary extends CostTotals {
+  active_users: number;
+  active_user_days: number;
+  avg_cost_per_user: number;
+  cost_per_active_user_day: number;
 }
 
 interface CostSummary {
@@ -45,7 +52,7 @@ interface UserCostDetail {
   user_id: string;
   user_email: string;
   organization_id: string | null;
-  summary: PeriodSummary;
+  summary: CostTotals;
   by_model: { model: string; est_cost_usd: number; total_tokens: number }[];
   daily: { date: string; est_cost_usd: number; total_tokens: number }[];
   recent_activity: {
@@ -175,7 +182,7 @@ export default async function costRoutes(fastify: FastifyInstance) {
         sql += `
           ),
           ranked_models AS (
-            SELECT 
+            SELECT
               model,
               provider,
               SUM(est_cost_usd) AS est_cost_usd,
@@ -354,64 +361,58 @@ export default async function costRoutes(fastify: FastifyInstance) {
         const prevFromStr = prevFrom.toISOString().split('T')[0];
         const prevToStr = prevTo.toISOString().split('T')[0];
 
-        let sql = `
-          WITH current_period AS (
-            SELECT 
-              SUM(est_cost_usd) as est_cost_usd,
-              SUM(total_tokens) as total_tokens,
-              SUM(total_requests) as total_requests
-            FROM gold.mart_llm_cost_by_user_model_day
-            WHERE date_day >= $1 AND date_day <= $2
-        `;
         const params: (string | null)[] = [from, to, prevFromStr, prevToStr];
-        let paramIndex = 2;
+        let currentFilters = '';
+        let previousFilters = '';
 
         if (organization_id) {
-          sql += ` AND user_id IN (SELECT user_id FROM gold.dim_users WHERE organization_id = $${++paramIndex})`;
+          const index = params.length + 1;
           params.push(organization_id);
+          const filter = ` AND user_id IN (
+            SELECT user_id FROM gold.dim_users WHERE organization_id = $${index}
+          )`;
+          currentFilters += filter;
+          previousFilters += filter;
         }
 
         if (agent_id) {
-          sql += ` AND agent_id = $${++paramIndex}`;
+          const index = params.length + 1;
           params.push(agent_id);
+          const filter = ` AND agent_id = $${index}`;
+          currentFilters += filter;
+          previousFilters += filter;
         }
 
-        sql += `
+        const sql = `
+          WITH current_period AS (
+            SELECT
+              COALESCE(SUM(est_cost_usd), 0) as est_cost_usd,
+              COALESCE(SUM(total_tokens), 0) as total_tokens,
+              COALESCE(SUM(total_requests), 0) as total_requests,
+              COUNT(DISTINCT user_id)::integer as active_users,
+              (COUNT(DISTINCT (user_id, date_day))
+                FILTER (WHERE user_id IS NOT NULL))::integer as active_user_days
+            FROM gold.mart_llm_cost_by_user_model_day
+            WHERE date_day >= $1::date AND date_day <= $2::date
+              ${currentFilters}
           ),
           previous_period AS (
             SELECT 
-              SUM(est_cost_usd) as est_cost_usd,
-              SUM(total_tokens) as total_tokens,
-              SUM(total_requests) as total_requests
+              COALESCE(SUM(est_cost_usd), 0) as est_cost_usd,
+              COALESCE(SUM(total_tokens), 0) as total_tokens,
+              COALESCE(SUM(total_requests), 0) as total_requests,
+              COUNT(DISTINCT user_id)::integer as active_users,
+              (COUNT(DISTINCT (user_id, date_day))
+                FILTER (WHERE user_id IS NOT NULL))::integer as active_user_days
             FROM gold.mart_llm_cost_by_user_model_day
-            WHERE date_day >= $3 AND date_day <= $4
-        `;
-
-        if (organization_id) {
-          sql += ` AND user_id IN (SELECT user_id FROM gold.dim_users WHERE organization_id = $${params.indexOf(organization_id) + 1})`;
-        }
-
-        if (agent_id) {
-          sql += ` AND agent_id = $${params.indexOf(agent_id) + 1}`;
-        }
-
-        sql += `
+            WHERE date_day >= $3::date AND date_day <= $4::date
+              ${previousFilters}
           ),
           most_expensive AS (
             SELECT model
             FROM gold.mart_llm_cost_by_user_model_day
-            WHERE date_day >= $1 AND date_day <= $2
-        `;
-
-        if (organization_id) {
-          sql += ` AND user_id IN (SELECT user_id FROM gold.dim_users WHERE organization_id = $${params.indexOf(organization_id) + 1})`;
-        }
-
-        if (agent_id) {
-          sql += ` AND agent_id = $${params.indexOf(agent_id) + 1}`;
-        }
-
-        sql += `
+            WHERE date_day >= $1::date AND date_day <= $2::date
+              ${currentFilters}
             GROUP BY model
             ORDER BY SUM(est_cost_usd) DESC
             LIMIT 1
@@ -420,12 +421,32 @@ export default async function costRoutes(fastify: FastifyInstance) {
             json_build_object(
               'est_cost_usd', COALESCE(cp.est_cost_usd, 0),
               'total_tokens', COALESCE(cp.total_tokens, 0),
-              'total_requests', COALESCE(cp.total_requests, 0)
+              'total_requests', COALESCE(cp.total_requests, 0),
+              'active_users', cp.active_users,
+              'active_user_days', cp.active_user_days,
+              'avg_cost_per_user', CASE
+                WHEN cp.active_users > 0 THEN cp.est_cost_usd / cp.active_users
+                ELSE 0
+              END,
+              'cost_per_active_user_day', CASE
+                WHEN cp.active_user_days > 0 THEN cp.est_cost_usd / cp.active_user_days
+                ELSE 0
+              END
             ) as current,
             json_build_object(
               'est_cost_usd', COALESCE(pp.est_cost_usd, 0),
               'total_tokens', COALESCE(pp.total_tokens, 0),
-              'total_requests', COALESCE(pp.total_requests, 0)
+              'total_requests', COALESCE(pp.total_requests, 0),
+              'active_users', pp.active_users,
+              'active_user_days', pp.active_user_days,
+              'avg_cost_per_user', CASE
+                WHEN pp.active_users > 0 THEN pp.est_cost_usd / pp.active_users
+                ELSE 0
+              END,
+              'cost_per_active_user_day', CASE
+                WHEN pp.active_user_days > 0 THEN pp.est_cost_usd / pp.active_user_days
+                ELSE 0
+              END
             ) as previous,
             COALESCE(me.model, 'N/A') as most_expensive_model,
             CASE 
@@ -448,8 +469,24 @@ export default async function costRoutes(fastify: FastifyInstance) {
         if (rows.length === 0) {
           return {
             data: {
-              current: { est_cost_usd: 0, total_tokens: 0, total_requests: 0 },
-              previous: { est_cost_usd: 0, total_tokens: 0, total_requests: 0 },
+              current: {
+                est_cost_usd: 0,
+                total_tokens: 0,
+                total_requests: 0,
+                active_users: 0,
+                active_user_days: 0,
+                avg_cost_per_user: 0,
+                cost_per_active_user_day: 0,
+              },
+              previous: {
+                est_cost_usd: 0,
+                total_tokens: 0,
+                total_requests: 0,
+                active_users: 0,
+                active_user_days: 0,
+                avg_cost_per_user: 0,
+                cost_per_active_user_day: 0,
+              },
               most_expensive_model: 'N/A',
               cost_per_1k_tokens: 0,
             },

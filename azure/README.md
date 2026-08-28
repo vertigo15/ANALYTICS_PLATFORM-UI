@@ -50,8 +50,17 @@ az acr login --name jeendevregistry
 docker build -t jeendevregistry.azurecr.io/jeen-analytics-api:latest -f api/Dockerfile ./api
 docker push jeendevregistry.azurecr.io/jeen-analytics-api:latest
 
-# Build and push Web
-docker build -t jeendevregistry.azurecr.io/jeen-analytics-web:latest -f web/Dockerfile ./web
+# Build and push Web (NEXT_PUBLIC_* values must be present at build time)
+$apiFqdn = az containerapp show `
+    --subscription "c4289eb9-2fb6-48b7-9a75-1251ebba3992" `
+    --name jeen-analytics-api `
+    --resource-group jeen-rg-dev-weu `
+    --query properties.configuration.ingress.fqdn `
+    --output tsv
+docker build `
+    --build-arg "NEXT_PUBLIC_API_URL=https://$apiFqdn" `
+    -t jeendevregistry.azurecr.io/jeen-analytics-web:latest `
+    -f web/Dockerfile ./web
 docker push jeendevregistry.azurecr.io/jeen-analytics-web:latest
 ```
 

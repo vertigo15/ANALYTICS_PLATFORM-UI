@@ -95,50 +95,63 @@ export default async function analyticsRoutes(fastify: FastifyInstance) {
   fastify.get<{ Querystring: QueryParams; Reply: ApiResponse<AnalyticsKPIs> }>(
     '/kpis',
     async (request, reply) => {
-      const { from, to } = request.query;
+      const { from, to, organization_id } = request.query;
       if (!from || !to) {
         reply.code(400);
         throw new Error('from and to query parameters are required');
       }
 
-      const cacheKey = `analytics:kpis:${from}:${to}`;
+      const cacheKey = `analytics:kpis:${from}:${to}:${organization_id || 'all'}`;
       const cacheTTL = 3300;
 
       try {
+        const userJoinCol = await getUserJoinCol();
+        const params: (string | null)[] = [from, to];
+        let orgFilter = '';
+        if (organization_id) {
+          orgFilter = `AND m.${userJoinCol} IN (
+            SELECT ${userJoinCol} FROM gold.dim_users WHERE organization_id = $3
+          )`;
+          params.push(organization_id);
+        }
+
         const sql = `
           WITH response_pairs AS (
             SELECT
-              conversation_id,
-              message_created_at,
-              role,
-              LEAD(message_created_at) OVER (
-                PARTITION BY conversation_id ORDER BY message_created_at
+              m.conversation_id,
+              m.message_created_at,
+              m.role,
+              LEAD(m.message_created_at) OVER (
+                PARTITION BY m.conversation_id ORDER BY m.message_created_at
               ) AS next_ts,
-              LEAD(role) OVER (
-                PARTITION BY conversation_id ORDER BY message_created_at
+              LEAD(m.role) OVER (
+                PARTITION BY m.conversation_id ORDER BY m.message_created_at
               ) AS next_role
-            FROM gold.fact_messages
-            WHERE message_created_at >= $1::timestamp
-              AND message_created_at <= ($2::date + INTERVAL '1 day')
+            FROM gold.fact_messages m
+            WHERE m.message_created_at >= $1::timestamp
+              AND m.message_created_at < ($2::date + INTERVAL '1 day')
+              ${orgFilter}
           ),
           conversations AS (
             SELECT
-              conversation_id,
+              m.conversation_id,
               COUNT(*)::int AS turns
-            FROM gold.fact_messages
-            WHERE message_created_at >= $1::timestamp
-              AND message_created_at <= ($2::date + INTERVAL '1 day')
-            GROUP BY conversation_id
+            FROM gold.fact_messages m
+            WHERE m.message_created_at >= $1::timestamp
+              AND m.message_created_at < ($2::date + INTERVAL '1 day')
+              ${orgFilter}
+            GROUP BY m.conversation_id
             HAVING COUNT(*) >= 2
           ),
           assistant_stats AS (
             SELECT
               COUNT(*)::int AS total_assistant_msgs,
               SUM(CASE WHEN has_tool_calls THEN 1 ELSE 0 END)::int AS tool_call_msgs
-            FROM gold.fact_messages
-            WHERE message_created_at >= $1::timestamp
-              AND message_created_at <= ($2::date + INTERVAL '1 day')
-              AND role = 'assistant'
+            FROM gold.fact_messages m
+            WHERE m.message_created_at >= $1::timestamp
+              AND m.message_created_at < ($2::date + INTERVAL '1 day')
+              AND m.role = 'assistant'
+              ${orgFilter}
           )
           SELECT
             (SELECT COUNT(*)::int FROM conversations) AS total_conversations,
@@ -158,7 +171,7 @@ export default async function analyticsRoutes(fastify: FastifyInstance) {
         `;
 
         const { rows, cached } = await queryWithCache<AnalyticsKPIs>(
-          cacheKey, cacheTTL, sql, [from, to]
+          cacheKey, cacheTTL, sql, params
         );
 
         const defaults: AnalyticsKPIs = {
@@ -225,7 +238,7 @@ export default async function analyticsRoutes(fastify: FastifyInstance) {
           FROM gold.fact_messages m
           LEFT JOIN gold.dim_users du ON m.${userJoinCol} = du.${userJoinCol}
           WHERE m.message_created_at >= $1::timestamp
-            AND m.message_created_at <= ($2::date + INTERVAL '1 day')
+            AND m.message_created_at < ($2::date + INTERVAL '1 day')
             ${orgFilter}
           GROUP BY m.conversation_id
           HAVING COUNT(*) >= 2
@@ -255,7 +268,7 @@ export default async function analyticsRoutes(fastify: FastifyInstance) {
           SELECT m.conversation_id
           FROM gold.fact_messages m
           WHERE m.message_created_at >= $1::timestamp
-            AND m.message_created_at <= ($2::date + INTERVAL '1 day')
+            AND m.message_created_at < ($2::date + INTERVAL '1 day')
             ${orgFilter}
           GROUP BY m.conversation_id
           HAVING COUNT(*) >= 2
@@ -285,26 +298,37 @@ export default async function analyticsRoutes(fastify: FastifyInstance) {
   fastify.get<{ Querystring: QueryParams; Reply: ApiResponse<OutcomeBreakdownRow[]> }>(
     '/outcome-breakdown',
     async (request, reply) => {
-      const { from, to } = request.query;
+      const { from, to, organization_id } = request.query;
       if (!from || !to) {
         reply.code(400);
         throw new Error('from and to query parameters are required');
       }
 
-      const cacheKey = `analytics:outcome-breakdown:${from}:${to}`;
+      const cacheKey = `analytics:outcome-breakdown:${from}:${to}:${organization_id || 'all'}`;
       const cacheTTL = 3300;
 
       try {
+        const userJoinCol = await getUserJoinCol();
+        const params: (string | null)[] = [from, to];
+        let orgFilter = '';
+        if (organization_id) {
+          orgFilter = `AND m.${userJoinCol} IN (
+            SELECT ${userJoinCol} FROM gold.dim_users WHERE organization_id = $3
+          )`;
+          params.push(organization_id);
+        }
+
         const sql = `
           WITH conv AS (
             SELECT
-              conversation_id,
-              (ARRAY_AGG(role ORDER BY message_created_at DESC))[1] AS last_role,
-              BOOL_OR(has_tool_calls) AS used_tools
-            FROM gold.fact_messages
-            WHERE message_created_at >= $1::timestamp
-              AND message_created_at <= ($2::date + INTERVAL '1 day')
-            GROUP BY conversation_id
+              m.conversation_id,
+              (ARRAY_AGG(m.role ORDER BY m.message_created_at DESC))[1] AS last_role,
+              BOOL_OR(m.has_tool_calls) AS used_tools
+            FROM gold.fact_messages m
+            WHERE m.message_created_at >= $1::timestamp
+              AND m.message_created_at < ($2::date + INTERVAL '1 day')
+              ${orgFilter}
+            GROUP BY m.conversation_id
             HAVING COUNT(*) >= 2
           ),
           categorized AS (
@@ -323,7 +347,7 @@ export default async function analyticsRoutes(fastify: FastifyInstance) {
         `;
 
         const { rows, cached } = await queryWithCache<OutcomeBreakdownRow>(
-          cacheKey, cacheTTL, sql, [from, to]
+          cacheKey, cacheTTL, sql, params
         );
 
         return {
@@ -342,31 +366,42 @@ export default async function analyticsRoutes(fastify: FastifyInstance) {
   fastify.get<{ Querystring: QueryParams; Reply: ApiResponse<ResponseTimeTrend[]> }>(
     '/response-time-by-agent',
     async (request, reply) => {
-      const { from, to } = request.query;
+      const { from, to, organization_id } = request.query;
       if (!from || !to) {
         reply.code(400);
         throw new Error('from and to query parameters are required');
       }
 
-      const cacheKey = `analytics:resp-time:${from}:${to}`;
+      const cacheKey = `analytics:resp-time:${from}:${to}:${organization_id || 'all'}`;
       const cacheTTL = 3300;
 
       try {
+        const userJoinCol = await getUserJoinCol();
+        const params: (string | null)[] = [from, to];
+        let orgFilter = '';
+        if (organization_id) {
+          orgFilter = `AND m.${userJoinCol} IN (
+            SELECT ${userJoinCol} FROM gold.dim_users WHERE organization_id = $3
+          )`;
+          params.push(organization_id);
+        }
+
         const sql = `
           WITH msg_pairs AS (
             SELECT
-              DATE(message_created_at) AS date_day,
-              message_created_at,
-              role,
-              LEAD(message_created_at) OVER (
-                PARTITION BY conversation_id ORDER BY message_created_at
+              DATE(m.message_created_at) AS date_day,
+              m.message_created_at,
+              m.role,
+              LEAD(m.message_created_at) OVER (
+                PARTITION BY m.conversation_id ORDER BY m.message_created_at
               ) AS next_ts,
-              LEAD(role) OVER (
-                PARTITION BY conversation_id ORDER BY message_created_at
+              LEAD(m.role) OVER (
+                PARTITION BY m.conversation_id ORDER BY m.message_created_at
               ) AS next_role
-            FROM gold.fact_messages
-            WHERE message_created_at >= $1::timestamp
-              AND message_created_at <= ($2::date + INTERVAL '1 day')
+            FROM gold.fact_messages m
+            WHERE m.message_created_at >= $1::timestamp
+              AND m.message_created_at < ($2::date + INTERVAL '1 day')
+              ${orgFilter}
           )
           SELECT
             date_day::text,
@@ -381,7 +416,7 @@ export default async function analyticsRoutes(fastify: FastifyInstance) {
         `;
 
         const { rows, cached } = await queryWithCache<ResponseTimeTrend>(
-          cacheKey, cacheTTL, sql, [from, to]
+          cacheKey, cacheTTL, sql, params
         );
 
         return {
@@ -400,26 +435,37 @@ export default async function analyticsRoutes(fastify: FastifyInstance) {
   fastify.get<{ Querystring: QueryParams; Reply: ApiResponse<DepthOverTimeRow[]> }>(
     '/depth-over-time',
     async (request, reply) => {
-      const { from, to } = request.query;
+      const { from, to, organization_id } = request.query;
       if (!from || !to) {
         reply.code(400);
         throw new Error('from and to query parameters are required');
       }
 
-      const cacheKey = `analytics:depth:${from}:${to}`;
+      const cacheKey = `analytics:depth:${from}:${to}:${organization_id || 'all'}`;
       const cacheTTL = 3300;
 
       try {
+        const userJoinCol = await getUserJoinCol();
+        const params: (string | null)[] = [from, to];
+        let orgFilter = '';
+        if (organization_id) {
+          orgFilter = `AND m.${userJoinCol} IN (
+            SELECT ${userJoinCol} FROM gold.dim_users WHERE organization_id = $3
+          )`;
+          params.push(organization_id);
+        }
+
         const sql = `
           WITH conv_daily AS (
             SELECT
-              conversation_id,
-              DATE(MIN(message_created_at)) AS date_day,
+              m.conversation_id,
+              DATE(MIN(m.message_created_at)) AS date_day,
               COUNT(*)::int AS turns
-            FROM gold.fact_messages
-            WHERE message_created_at >= $1::timestamp
-              AND message_created_at <= ($2::date + INTERVAL '1 day')
-            GROUP BY conversation_id
+            FROM gold.fact_messages m
+            WHERE m.message_created_at >= $1::timestamp
+              AND m.message_created_at < ($2::date + INTERVAL '1 day')
+              ${orgFilter}
+            GROUP BY m.conversation_id
             HAVING COUNT(*) >= 2
           )
           SELECT
@@ -432,7 +478,7 @@ export default async function analyticsRoutes(fastify: FastifyInstance) {
         `;
 
         const { rows, cached } = await queryWithCache<DepthOverTimeRow>(
-          cacheKey, cacheTTL, sql, [from, to]
+          cacheKey, cacheTTL, sql, params
         );
 
         return {

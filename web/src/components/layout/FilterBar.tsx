@@ -29,7 +29,10 @@ export default function FilterBar() {
   );
 
   // Fetch agents
-  const { data: agentsData } = useSWR<ApiResponse<Agent[]>>('/agents/list', fetcher);
+  const agentsUrl = organizationId
+    ? `/agents/list?organization_id=${encodeURIComponent(organizationId)}`
+    : '/agents/list';
+  const { data: agentsData } = useSWR<ApiResponse<Agent[]>>(agentsUrl, fetcher);
 
   const handlePresetClick = (preset: DatePreset, days: number) => {
     if (preset === 'custom') {

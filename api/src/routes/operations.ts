@@ -7,6 +7,8 @@ interface OperationsKPIs {
   cost_last_hour: number;
   doc_failure_rate_24h: number;
   active_users_last_hour: number;
+  as_of_hour: string | null;
+  is_stale: boolean;
 }
 
 interface HealthIndicator {
@@ -69,27 +71,61 @@ export default async function operationsRoutes(fastify: FastifyInstance) {
       const { rows, cached } = await queryWithCache<OperationsKPIs>(
         cacheKey,
         cacheTTL,
-        `SELECT
-          COALESCE((
-            SELECT SUM(new_messages)
-            FROM gold.mart_operational_hourly
-            WHERE date_hour >= NOW() - INTERVAL '1 hour'
-          ), 0)::int AS messages_last_hour,
-          COALESCE((
-            SELECT SUM(total_cost_usd)
-            FROM gold.mart_operational_hourly
-            WHERE date_hour >= NOW() - INTERVAL '1 hour'
-          ), 0)::float AS cost_last_hour,
-          COALESCE((
-            SELECT AVG(doc_failure_rate)
-            FROM gold.mart_operational_hourly
-            WHERE date_hour >= NOW() - INTERVAL '24 hours'
-          ), 0)::float AS doc_failure_rate_24h,
-          COALESCE((
-            SELECT SUM(active_users)
-            FROM gold.mart_operational_hourly
-            WHERE date_hour >= NOW() - INTERVAL '1 hour'
-          ), 0)::int AS active_users_last_hour`
+        `WITH latest_hour AS (
+           SELECT MAX(date_hour) AS as_of_hour
+           FROM gold.mart_operational_hourly
+         ),
+         latest_bucket AS (
+           SELECT
+             COALESCE(SUM(m.new_messages), 0)::int AS messages_last_hour,
+             COALESCE(SUM(m.total_cost_usd), 0)::float AS cost_last_hour,
+             COALESCE(SUM(m.active_users), 0)::int AS active_users_last_hour
+           FROM gold.mart_operational_hourly m
+           CROSS JOIN latest_hour lh
+           WHERE m.date_hour = lh.as_of_hour
+         ),
+         mart_24h AS (
+           SELECT
+             COALESCE(SUM(m.failed_documents), 0)::numeric AS failed_documents,
+             COALESCE(SUM(m.new_documents), 0)::numeric AS total_documents
+           FROM gold.mart_operational_hourly m
+           CROSS JOIN latest_hour lh
+           WHERE m.date_hour >= lh.as_of_hour - INTERVAL '23 hours'
+             AND m.date_hour <= lh.as_of_hour
+         ),
+         fact_24h AS (
+           SELECT
+             COUNT(DISTINCT CASE
+               WHEN status = 'FAILED' OR active_processing_status = 'FAILED' THEN document_id
+             END)::numeric AS failed_documents,
+             COUNT(DISTINCT CASE
+               WHEN active_processing_status IN ('COMPLETED', 'READY')
+                 OR status = 'FAILED'
+                 OR active_processing_status = 'FAILED'
+               THEN document_id
+             END)::numeric AS terminal_documents
+           FROM gold.fact_document_processing fdp
+           CROSS JOIN latest_hour lh
+           WHERE fdp.document_created_at >= lh.as_of_hour - INTERVAL '23 hours'
+             AND fdp.document_created_at < lh.as_of_hour + INTERVAL '1 hour'
+         )
+         SELECT
+           lb.messages_last_hour,
+           lb.cost_last_hour,
+           CASE
+             WHEN f.terminal_documents > 0
+               THEN (f.failed_documents / f.terminal_documents)::float
+             WHEN m.total_documents > 0
+               THEN (m.failed_documents / m.total_documents)::float
+             ELSE 0
+           END AS doc_failure_rate_24h,
+           lb.active_users_last_hour,
+           lh.as_of_hour::text,
+           (lh.as_of_hour IS NULL OR lh.as_of_hour < NOW() - INTERVAL '2 hours') AS is_stale
+         FROM latest_hour lh
+         CROSS JOIN latest_bucket lb
+         CROSS JOIN mart_24h m
+         CROSS JOIN fact_24h f`
       );
 
       return {
@@ -123,15 +159,55 @@ export default async function operationsRoutes(fastify: FastifyInstance) {
       }>(
         cacheKey + ':raw',
         cacheTTL,
-        `SELECT
-          COALESCE(SUM(new_messages), 0)::int AS total_messages,
-          COALESCE(AVG(doc_failure_rate), 0)::float AS doc_failure_rate,
-          COALESCE(SUM(active_users), 0)::int AS active_users,
-          COALESCE(SUM(total_cost_usd), 0)::float AS total_cost_usd,
-          COALESCE(SUM(unique_agents_used), 0)::int AS unique_agents_used,
-          EXTRACT(EPOCH FROM (NOW() - MAX(date_hour))) / 3600 AS hours_since_last_data
-        FROM gold.mart_operational_hourly
-        WHERE date_hour >= NOW() - INTERVAL '4 hours'`
+        `WITH latest_hour AS (
+           SELECT MAX(date_hour) AS as_of_hour
+           FROM gold.mart_operational_hourly
+         ),
+         mart_window AS (
+           SELECT
+             COALESCE(SUM(m.new_messages), 0)::int AS total_messages,
+             COALESCE(SUM(m.active_users), 0)::int AS active_users,
+             COALESCE(SUM(m.total_cost_usd), 0)::float AS total_cost_usd,
+             COALESCE(SUM(m.unique_agents_used), 0)::int AS unique_agents_used,
+             COALESCE(SUM(m.failed_documents), 0)::numeric AS failed_documents,
+             COALESCE(SUM(m.new_documents), 0)::numeric AS total_documents
+           FROM gold.mart_operational_hourly m
+           CROSS JOIN latest_hour lh
+           WHERE m.date_hour > lh.as_of_hour - INTERVAL '4 hours'
+             AND m.date_hour <= lh.as_of_hour
+         ),
+         fact_window AS (
+           SELECT
+             COUNT(DISTINCT CASE
+               WHEN status = 'FAILED' OR active_processing_status = 'FAILED' THEN document_id
+             END)::numeric AS failed_documents,
+             COUNT(DISTINCT CASE
+               WHEN active_processing_status IN ('COMPLETED', 'READY')
+                 OR status = 'FAILED'
+                 OR active_processing_status = 'FAILED'
+               THEN document_id
+             END)::numeric AS terminal_documents
+           FROM gold.fact_document_processing fdp
+           CROSS JOIN latest_hour lh
+           WHERE fdp.document_created_at > lh.as_of_hour - INTERVAL '4 hours'
+             AND fdp.document_created_at < lh.as_of_hour + INTERVAL '1 hour'
+         )
+         SELECT
+           mw.total_messages,
+           CASE
+             WHEN fw.terminal_documents > 0
+               THEN (fw.failed_documents / fw.terminal_documents)::float
+             WHEN mw.total_documents > 0
+               THEN (mw.failed_documents / mw.total_documents)::float
+             ELSE 0
+           END AS doc_failure_rate,
+           mw.active_users,
+           mw.total_cost_usd,
+           mw.unique_agents_used,
+           EXTRACT(EPOCH FROM (NOW() - lh.as_of_hour)) / 3600 AS hours_since_last_data
+         FROM latest_hour lh
+         CROSS JOIN mart_window mw
+         CROSS JOIN fact_window fw`
       );
 
       const metrics = recent[0];
@@ -208,7 +284,11 @@ export default async function operationsRoutes(fastify: FastifyInstance) {
       const { rows, cached } = await queryWithCache<HourlyOperations>(
         cacheKey,
         cacheTTL,
-        `SELECT
+        `WITH latest_hour AS (
+          SELECT MAX(date_hour) AS as_of_hour
+          FROM gold.mart_operational_hourly
+        )
+        SELECT
           date_hour::text,
           new_messages::int,
           user_messages::int,
@@ -233,7 +313,9 @@ export default async function operationsRoutes(fastify: FastifyInstance) {
             ROWS BETWEEN 168 PRECEDING AND 1 PRECEDING
           ), 0)::float AS avg_assistant_messages_7d
         FROM gold.mart_operational_hourly
-        WHERE date_hour >= NOW() - INTERVAL '${hours} hours'
+        CROSS JOIN latest_hour
+        WHERE date_hour > latest_hour.as_of_hour - INTERVAL '${hours} hours'
+          AND date_hour <= latest_hour.as_of_hour
         ORDER BY date_hour ASC`
       );
 
